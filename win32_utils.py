@@ -1,6 +1,7 @@
-"""Win32 API utilities for focus prevention and input simulation."""
+"""Win32 API utilities for focus prevention, input simulation, and hotkeys."""
 
 import ctypes
+import threading
 from ctypes import wintypes
 
 # === Window Style Constants ===
@@ -20,6 +21,14 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 VK_CONTROL = 0x11
 VK_V = 0x56
+
+# === Global Hotkey Constants ===
+
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+VK_G = 0x47
+HOTKEY_ID = 1
 
 user32 = ctypes.windll.user32
 
@@ -70,6 +79,18 @@ class INPUT(ctypes.Structure):
 	_fields_ = [("type", ctypes.c_ulong), ("_input", _INPUT)]
 
 
+class MSG(ctypes.Structure):
+	_fields_ = [
+		("hwnd", ctypes.c_void_p),
+		("message", ctypes.c_uint),
+		("wParam", ULONG_PTR),
+		("lParam", ctypes.c_longlong),
+		("time", ctypes.c_ulong),
+		("pt_x", ctypes.c_long),
+		("pt_y", ctypes.c_long),
+	]
+
+
 # === Functions ===
 
 def enable_dpi_awareness():
@@ -81,12 +102,7 @@ def enable_dpi_awareness():
 
 
 def set_no_activate(root):
-	"""Apply WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW to prevent focus stealing.
-
-	This mimics how the Windows On-Screen Keyboard works:
-	the window receives mouse events but never becomes the foreground window,
-	so the previously focused application keeps receiving keystrokes.
-	"""
+	"""Apply WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW to prevent focus stealing."""
 	root.update_idletasks()
 	hwnd = user32.GetParent(root.winfo_id())
 	style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
@@ -126,6 +142,54 @@ def get_work_area():
 	Returns (left, top, right, bottom) of the primary monitor work area.
 	"""
 	rect = wintypes.RECT()
-	# SPI_GETWORKAREA = 0x0030
 	user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
 	return rect.left, rect.top, rect.right, rect.bottom
+
+
+# === Global Hotkey (thread-based) ===
+
+_hotkey_event = threading.Event()
+_hotkey_thread = None
+
+
+def _hotkey_thread_func():
+	"""Dedicated thread with its own message loop for hotkey detection."""
+	# Force message queue creation
+	msg = MSG()
+	user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+
+	ok = user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_G)
+	if not ok:
+		return
+
+	while True:
+		ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+		if ret <= 0:
+			break
+		if msg.message == WM_HOTKEY:
+			_hotkey_event.set()
+
+
+def start_hotkey_listener():
+	"""Start the global hotkey listener thread. Returns True if started."""
+	global _hotkey_thread
+	_hotkey_thread = threading.Thread(target=_hotkey_thread_func, daemon=True)
+	_hotkey_thread.start()
+	return True
+
+
+def check_hotkey_pressed():
+	"""Check if the global hotkey was pressed (non-blocking)."""
+	if _hotkey_event.is_set():
+		_hotkey_event.clear()
+		return True
+	return False
+
+
+def stop_hotkey_listener():
+	"""Post quit message to the hotkey thread."""
+	if _hotkey_thread and _hotkey_thread.is_alive():
+		# PostThreadMessage to break GetMessageW loop
+		tid = _hotkey_thread.ident
+		if tid:
+			user32.PostThreadMessageW(tid, 0x0012, 0, 0)  # WM_QUIT

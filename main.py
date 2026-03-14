@@ -10,7 +10,11 @@ import os
 import tkinter as tk
 import tkinter.font as tkFont
 from characters import CATEGORIES
-from win32_utils import enable_dpi_awareness, set_no_activate, send_paste, get_work_area, force_foreground
+from win32_utils import (
+	enable_dpi_awareness, set_no_activate, send_paste,
+	get_work_area, force_foreground,
+	start_hotkey_listener, check_hotkey_pressed, stop_hotkey_listener,
+)
 
 
 # === Config ===
@@ -39,6 +43,10 @@ C = {
 	"gold":      "#e6c440",
 	"gold_dim":  "#b89a30",
 	"gold_dark": "#2e2a0a",
+	"amber":     "#e6a040",
+	"amber_dim": "#b87830",
+	"purple":    "#b48eff",
+	"purple_dim":"#8a6bc0",
 	"pattern":   "#1c1c1c",
 	"tab":       "#222222",
 	"tab_border": "#2e2e2e",
@@ -48,17 +56,18 @@ C = {
 
 APP_INFO = {
 	"name": "GlyphKit",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"author": "Lunyxium",
 	"year": 2026,
 	"description": "Unicode character palette for Windows 11",
 	"tech": "Python \u00b7 tkinter \u00b7 ctypes \u00b7 zero dependencies",
 	"license": "MIT",
+	"hotkey": "Ctrl + Alt + G",
 }
 
 # === Layout ===
 
-COLUMNS = 26
+COLUMNS = 27
 BTN_SIZE = 36
 GAP = 3
 PAD = 10
@@ -66,11 +75,22 @@ SNAP_DIST = 60
 TITLEBAR_H = 36
 STATUS_H = 38
 GRID_ROWS = 3
+IDLE_OPACITY = 0.60
+MAX_RECENTS = 24
 
 # Tab rows: grouped by theme. Only categories present in CATEGORIES are shown.
 TAB_ROWS = [
 	["Math", "Scripts", "Sets", "Logic", "Greek", "Arrows", "Fractions"],
 	["Roman", "Shapes", "Boxes", "Typography", "Currency", "Science"],
+]
+
+# === Copy Modes ===
+
+COPY_MODES = [
+	{"key": "copy", "label": "COPY \u25cb", "fg": C["text_dim"],   "status": "Click to copy character to clipboard"},
+	{"key": "auto", "label": "AUTO \u25cf", "fg": C["teal"],       "status": "Click to copy & paste into active window"},
+	{"key": "html", "label": "HTML \u25c6", "fg": C["amber"],      "status": "Click to copy as HTML entity"},
+	{"key": "code", "label": "U+ \u25c7",   "fg": C["purple"],     "status": "Click to copy Unicode codepoint"},
 ]
 
 
@@ -117,7 +137,7 @@ class GlyphKitApp:
 		self.root = tk.Tk()
 		self.root.withdraw()
 
-		self.auto_paste = True
+		self._copy_mode = 1  # Default: AUTO
 		self.current_cat = "Math"
 		self.tabs = {}
 		self.char_frame = None
@@ -129,9 +149,11 @@ class GlyphKitApp:
 		self._reset_timer = None
 		self._delete_mode = False
 		self._favorites = []
+		self._recents = []
 		self._char_order = self._build_char_order()
 		self._search_var = tk.StringVar()
 		self._search_var.trace_add("write", self._on_search)
+		self._visible = True
 
 		self.win_w = COLUMNS * (BTN_SIZE + GAP) + GAP + PAD * 2
 		self.win_h = 0
@@ -143,12 +165,14 @@ class GlyphKitApp:
 
 	def _init_hwnd(self):
 		self._hwnd = set_no_activate(self.root)
+		self._setup_hotkey()
+		self._setup_opacity()
+		self.root.bind("<Escape>", self._on_escape)
 
 	@staticmethod
 	def _build_char_order():
 		"""Build global ordering index for favorites sorting."""
 		order = {}
-		# Build char→name lookup at the same time
 		idx = 0
 		for cat_key in [k for row in TAB_ROWS for k in row]:
 			if cat_key not in CATEGORIES:
@@ -167,15 +191,20 @@ class GlyphKitApp:
 				self._config = json.load(f)
 		except (FileNotFoundError, json.JSONDecodeError):
 			self._config = {}
-		self.auto_paste = self._config.get("auto_paste", True)
+		self._copy_mode = self._config.get("copy_mode", 1)
+		if self._copy_mode not in range(len(COPY_MODES)):
+			self._copy_mode = 1
 		self._favorites = self._config.get("favorites", [])
+		self._recents = self._config.get("recents", [])
+		self.status_default = self._default_status_text()
 
 	def _save_config(self):
 		config = {
 			"x": self.root.winfo_x(),
 			"y": self.root.winfo_y(),
-			"auto_paste": self.auto_paste,
+			"copy_mode": self._copy_mode,
 			"favorites": self._favorites,
+			"recents": self._recents,
 		}
 		try:
 			with open(CONFIG_PATH, "w") as f:
@@ -185,6 +214,7 @@ class GlyphKitApp:
 
 	def _quit(self):
 		self._save_config()
+		stop_hotkey_listener()
 		self.root.quit()
 
 	# === Build UI ===
@@ -192,6 +222,9 @@ class GlyphKitApp:
 	def _build(self):
 		r = self.root
 		r.title("GlyphKit")
+		ico = os.path.join(_DIR, "glyphkit.ico")
+		if os.path.exists(ico):
+			r.iconbitmap(ico)
 		r.overrideredirect(True)
 		r.configure(bg=C["bg"])
 		r.attributes("-topmost", True)
@@ -211,7 +244,6 @@ class GlyphKitApp:
 	def _lock_layout(self):
 		"""Lock grid height and set explicit window geometry."""
 		self.root.update_idletasks()
-		# Measure actual row height from rendered buttons
 		children = self.char_frame.winfo_children()
 		if children:
 			row_h = children[0].winfo_reqheight() + (GAP // 2 + 1) * 2
@@ -220,22 +252,21 @@ class GlyphKitApp:
 		grid_h = GRID_ROWS * row_h + 8
 		self.grid_container.configure(height=grid_h)
 		self.grid_container.pack_propagate(False)
-		# Set explicit window size
 		self.root.update_idletasks()
 		self.win_h = self.root.winfo_reqheight()
 		self.root.geometry(f"{self.win_w}x{self.win_h}")
 
 	def _apply_config(self):
-		"""Apply saved position and auto-paste preference."""
+		"""Apply saved position and copy mode preference."""
 		if "x" in self._config and "y" in self._config:
 			self.root.geometry(
 				f"{self.win_w}x{self.win_h}+{self._config['x']}+{self._config['y']}"
 			)
 		else:
 			self._position_bottom()
-		# Sync auto-paste toggle display
-		if not self.auto_paste:
-			self.titlebar.itemconfig(self._paste_id, text="COPY \u25cb", fill=C["text_dim"])
+		# Sync mode toggle display
+		mode = COPY_MODES[self._copy_mode]
+		self.titlebar.itemconfig(self._mode_id, text=mode["label"], fill=mode["fg"])
 
 	# --- Titlebar ---
 
@@ -249,8 +280,17 @@ class GlyphKitApp:
 
 		bar.create_text(
 			14, TITLEBAR_H // 2, text="GlyphKit",
-			fill=C["teal_dim"], font=("Segoe UI", 10, "bold"), anchor="w",
+			fill=C["teal_dim"], font=("Segoe UI", 10, "bold"),
+			anchor="w", tags="title",
 		)
+		bar.tag_bind("title", "<Enter>", lambda e: (
+			bar.itemconfig("title", fill=C["teal"]),
+			self._set_status(f"Toggle: Ctrl+Alt+G  \u00b7  Close: Esc (while focused)"),
+		))
+		bar.tag_bind("title", "<Leave>", lambda e: (
+			bar.itemconfig("title", fill=C["teal_dim"]),
+			self._set_status(self.status_default),
+		))
 
 		# --- Close button ---
 		cx = self.win_w - 20
@@ -262,15 +302,17 @@ class GlyphKitApp:
 		bar.tag_bind("close", "<Enter>", lambda e: bar.itemconfig("close", fill="#ff6b6b"))
 		bar.tag_bind("close", "<Leave>", lambda e: bar.itemconfig("close", fill=C["text_dim"]))
 
-		# --- Auto-paste toggle ---
+		# --- Copy mode toggle (cycles through 4 modes) ---
 		ax = cx - 56
-		self._paste_id = bar.create_text(
-			ax, TITLEBAR_H // 2, text="AUTO \u25cf",
-			fill=C["teal"], font=("Segoe UI", 8, "bold"), anchor="center", tags="auto",
+		mode = COPY_MODES[self._copy_mode]
+		self._mode_id = bar.create_text(
+			ax, TITLEBAR_H // 2, text=mode["label"],
+			fill=mode["fg"], font=("Segoe UI", 8, "bold"),
+			anchor="center", tags="mode",
 		)
-		bar.tag_bind("auto", "<Button-1>", self._toggle_paste)
-		bar.tag_bind("auto", "<Enter>", lambda e: self._auto_hover_in())
-		bar.tag_bind("auto", "<Leave>", lambda e: self._auto_hover_out())
+		bar.tag_bind("mode", "<Button-1>", self._cycle_mode)
+		bar.tag_bind("mode", "<Enter>", lambda e: self._mode_hover_in())
+		bar.tag_bind("mode", "<Leave>", lambda e: self._mode_hover_out())
 
 		# --- Drag ---
 		bar.bind("<Button-1>", self._drag_start)
@@ -295,9 +337,9 @@ class GlyphKitApp:
 		border.pack(side=side, padx=3)
 		bg = C["tab"]
 		fg = C["text_dim"]
-		font = ("Segoe UI", 10)
-		f = tkFont.Font(family="Segoe UI", size=10)
-		tw = f.measure(text) + 8
+		font = ("Consolas", 9)
+		f = tkFont.Font(family="Consolas", size=9)
+		tw = f.measure(text) + 4
 		th = f.metrics("ascent") + f.metrics("descent") + 6
 		tab = TextCanvas(
 			border, text=text, font=font, fg=fg,
@@ -326,9 +368,9 @@ class GlyphKitApp:
 			row_frame = tk.Frame(outer, bg=C["bg"])
 			row_frame.pack(fill="x", pady=3, padx=PAD)
 
-			# Favorites + info right-aligned on first row
+			# Recent + Favorites right-aligned on first row
 			if row_keys is TAB_ROWS[0]:
-				self._build_fav_row(row_frame)
+				self._build_special_tabs(row_frame)
 
 			# Search bar right-aligned on second row
 			if row_keys is TAB_ROWS[1]:
@@ -343,17 +385,15 @@ class GlyphKitApp:
 	# --- Search ---
 
 	def _build_search(self, parent):
-		"""Search entry, packed right on the first tab row."""
+		"""Search entry, packed right on the second tab row."""
 		self._search_bg = "#1e2120"
 		self._search_border_idle = "#363636"
 		self._search_border_active = C["teal_dim"]
 		self._search_glow_color = C["teal_dark"]
 
-		# Outer glow frame (visible only when active)
 		self._search_glow = tk.Frame(parent, bg=C["bg"])
 		self._search_glow.pack(side="right", padx=(6, 3))
 
-		# Border frame (the visible outline)
 		self._search_border = tk.Frame(self._search_glow, bg=self._search_border_idle)
 		self._search_border.pack(padx=1, pady=1)
 
@@ -377,7 +417,6 @@ class GlyphKitApp:
 		self._search_entry.bind("<Button-1>", self._search_activate)
 		self._search_entry.bind("<FocusOut>", self._search_focus_out)
 
-		# Init placeholder
 		self._set_search_placeholder()
 
 	def _set_search_placeholder(self):
@@ -388,11 +427,9 @@ class GlyphKitApp:
 		self._search_entry.insert(0, "search...")
 		self._search_entry.configure(fg=C["text_dim"], insertbackground=self._search_bg)
 		self._search_clearing = False
-		# Idle outline, no glow, dim icon
 		self._search_border.configure(bg=self._search_border_idle)
 		self._search_glow.configure(bg=C["bg"])
 		self._search_icon.configure(fg="#506b65")
-		# Move focus away so blinking cursor disappears
 		self.root.focus_set()
 
 	def _search_activate(self, _event=None):
@@ -405,7 +442,6 @@ class GlyphKitApp:
 			self._search_entry.configure(fg="#c8c8c8", insertbackground=C["teal"])
 			self._search_placeholder = False
 			self._search_clearing = False
-		# Active outline + glow + icon highlight
 		self._search_border.configure(bg=self._search_border_active)
 		self._search_glow.configure(bg=self._search_glow_color)
 		self._search_icon.configure(fg="#6b9e95")
@@ -425,18 +461,18 @@ class GlyphKitApp:
 		if not query:
 			if self.current_cat == "_favorites":
 				self._render_favorites()
+			elif self.current_cat == "_recents":
+				self._render_recents()
 			else:
 				self._fill_grid(CATEGORIES[self.current_cat]["chars"])
 			return
 
-		# Collect matches from all categories
 		matches = []
 		for cat_data in CATEGORIES.values():
 			for char, name in cat_data["chars"]:
 				if query in name.lower():
 					matches.append((char, name))
 
-		# Deduplicate while preserving order
 		seen = set()
 		unique = []
 		for char, name in matches:
@@ -444,16 +480,8 @@ class GlyphKitApp:
 				seen.add(char)
 				unique.append((char, name))
 
-		# Deselect all tabs visually (including favorites)
-		for k, lbl in self.tabs.items():
-			self._tab_borders[k].configure(bg=C["tab_border"])
-			default_bg, default_fg = self._tab_defaults[k]
-			lbl.configure(fg=default_fg, bg=default_bg, font=("Segoe UI", 10))
-		if hasattr(self, "_fav_canvas"):
-			self._fav_accent.configure(bg="#1a3a36")
-			self._fav_set_colors(self._fav_defaults[1], self._fav_defaults[0], star="\u2606")
-		if hasattr(self, "_del_btn_frame"):
-			self._del_btn_frame.destroy()
+		# Deselect all tabs
+		self._deselect_all_tabs()
 
 		if unique:
 			self._fill_grid(unique)
@@ -468,70 +496,103 @@ class GlyphKitApp:
 				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 10),
 			).grid(row=0, column=0, sticky="w", padx=4, pady=8)
 
-	# --- Favorites ---
+	# --- Tab Deselection Helper ---
 
-	def _build_fav_row(self, parent):
-		"""Build Favorites button + info icon, right-aligned on tab row 1."""
-		# Favorites tab — accent bar style (packed first = rightmost)
-		fav_frame = tk.Frame(parent, bg=C["bg"])
-		fav_frame.pack(side="right", padx=(4, 0))
+	def _deselect_all_tabs(self):
+		"""Reset all category, favorites, and recents tabs to default state."""
+		for k, lbl in self.tabs.items():
+			self._tab_borders[k].configure(bg=C["tab_border"])
+			default_bg, default_fg = self._tab_defaults[k]
+			lbl.configure(fg=default_fg, bg=default_bg, font=("Consolas", 9))
+		if hasattr(self, "_fav_canvas"):
+			self._fav_accent.configure(bg="#1a3a36")
+			self._fav_set_colors(self._fav_defaults[1], self._fav_defaults[0], star="\u2606")
+		if hasattr(self, "_recent_canvas"):
+			self._recent_accent.configure(bg="#1a3a36")
+			self._recent_set_colors(self._recent_defaults[1], self._recent_defaults[0])
+		if hasattr(self, "_del_btn_frame"):
+			self._del_btn_frame.destroy()
 
-		# Info icon — raw Canvas for vertical centering (left of favorites)
-		info_font = ("Segoe UI", 14, "bold")
-		inf = tkFont.Font(family="Segoe UI", size=14, weight="bold")
-		iw = inf.measure("\u24d8") + 8
-		ih = inf.metrics("ascent") + inf.metrics("descent") + 6
-		info = tk.Canvas(
-			parent, width=iw, height=ih,
-			bg=C["bg"], highlightthickness=0, bd=0, cursor="hand2",
-		)
-		info.pack(side="right", padx=(4, 2))
-		self._info_text_id = info.create_text(
-			iw // 2, ih // 2 - 3, text="\u24d8", fill="#555555", font=info_font,
-		)
-		info.bind("<Enter>", lambda e: (
-			info.itemconfig(self._info_text_id, fill=C["teal_dim"]),
-			self._set_status("Right-click any character to add to Favorites"),
-		))
-		info.bind("<Leave>", lambda e: (
-			info.itemconfig(self._info_text_id, fill="#555555"),
-			self._set_status(self.status_default),
-		))
+	# --- Special Tabs (Recents + Favorites) ---
+
+	def _build_special_tabs(self, parent):
+		"""Build Recent and Favorites buttons, right-aligned on tab row 1."""
+		tab_font = ("Consolas", 9)
+		star_font = ("Segoe UI", 11)
+		icon_font = ("Segoe UI", 10)
+		tf = tkFont.Font(family="Consolas", size=9)
+		sf = tkFont.Font(family="Segoe UI", size=11)
+		rif = tkFont.Font(family="Segoe UI", size=10)
+		tab_h = tf.metrics("ascent") + tf.metrics("descent") + 6
 
 		fav_bg = "#1a2422"
 		fav_fg = C["teal_dim"]
-		star_font = ("Segoe UI", 15)
-		label_font = ("Segoe UI", 10, "bold")
-		f = tkFont.Font(family="Segoe UI", size=10, weight="bold")
-		sf = tkFont.Font(family="Segoe UI", size=15)
-		label_w = f.measure("Favorites") + sf.measure("\u2606 ") + 20
-		label_h = f.metrics("ascent") + f.metrics("descent") + 6
+		rec_bg = "#1a2224"
+		rec_fg = C["teal_dim"]
 
-		cvs = tk.Canvas(
-			fav_frame, width=label_w, height=label_h,
+		# --- Favorites tab (packed first = rightmost) ---
+		fav_frame = tk.Frame(parent, bg=C["bg"])
+		fav_frame.pack(side="right", padx=(8, 0))
+
+		fav_w = sf.measure("\u2606 ") + tf.measure("Favorites") + 10
+		fav_cvs = tk.Canvas(
+			fav_frame, width=fav_w, height=tab_h,
 			bg=fav_bg, highlightthickness=0, bd=0, cursor="hand2",
 		)
-		cvs.pack(side="left")
+		fav_cvs.pack(side="left")
 
-		accent = tk.Frame(fav_frame, bg="#1a3a36", width=3)
-		accent.pack(side="left", fill="y")
+		fav_accent = tk.Frame(fav_frame, bg="#1a3a36", width=3)
+		fav_accent.pack(side="left", fill="y")
 
-		star_x = sf.measure("\u2606") // 2 + 6
-		label_x = sf.measure("\u2606 ") + 8
-		cy = label_h // 2 - 1
-		self._fav_star_id = cvs.create_text(
-			star_x, cy - 3, text="\u2606", fill=fav_fg, font=star_font,
+		star_x = sf.measure("\u2606") // 2 + 4
+		fav_label_x = sf.measure("\u2606 ") + 5
+		fav_cy = tab_h // 2 - 1
+		self._fav_star_id = fav_cvs.create_text(
+			star_x, fav_cy - 2, text="\u2606", fill=fav_fg, font=star_font,
 		)
-		self._fav_label_id = cvs.create_text(
-			label_x, cy, text="Favorites", fill=fav_fg, font=label_font, anchor="w",
+		self._fav_label_id = fav_cvs.create_text(
+			fav_label_x, fav_cy, text="Favorites", fill=fav_fg, font=tab_font, anchor="w",
 		)
-		self._fav_canvas = cvs
-
-		cvs.bind("<Button-1>", lambda e: self._show_favorites())
-		cvs.bind("<Enter>", lambda e: self._fav_hover_in())
-		cvs.bind("<Leave>", lambda e: self._fav_hover_out())
-		self._fav_accent = accent
+		self._fav_canvas = fav_cvs
+		self._fav_accent = fav_accent
 		self._fav_defaults = (fav_bg, fav_fg)
+
+		fav_cvs.bind("<Button-1>", lambda e: self._show_favorites())
+		fav_cvs.bind("<Enter>", lambda e: self._fav_hover_in())
+		fav_cvs.bind("<Leave>", lambda e: self._fav_hover_out())
+
+		# --- Recent tab (left of favorites) ---
+		rec_frame = tk.Frame(parent, bg=C["bg"])
+		rec_frame.pack(side="right", padx=(9, 3))
+
+		rec_w = rif.measure("\u21bb ") + tf.measure("Recent") + 10
+		rec_cvs = tk.Canvas(
+			rec_frame, width=rec_w, height=tab_h,
+			bg=rec_bg, highlightthickness=0, bd=0, cursor="hand2",
+		)
+		rec_cvs.pack(side="left")
+
+		rec_accent = tk.Frame(rec_frame, bg="#1a3a36", width=3)
+		rec_accent.pack(side="left", fill="y")
+
+		rec_icon_x = rif.measure("\u21bb") // 2 + 4
+		rec_label_x = rif.measure("\u21bb ") + 5
+		rec_cy = tab_h // 2 - 1
+		self._recent_icon_id = rec_cvs.create_text(
+			rec_icon_x, rec_cy - 1, text="\u21bb", fill=rec_fg, font=icon_font,
+		)
+		self._recent_label_id = rec_cvs.create_text(
+			rec_label_x, rec_cy, text="Recent", fill=rec_fg, font=tab_font, anchor="w",
+		)
+		self._recent_canvas = rec_cvs
+		self._recent_accent = rec_accent
+		self._recent_defaults = (rec_bg, rec_fg)
+
+		rec_cvs.bind("<Button-1>", lambda e: self._show_recents())
+		rec_cvs.bind("<Enter>", lambda e: self._recent_hover_in())
+		rec_cvs.bind("<Leave>", lambda e: self._recent_hover_out())
+
+	# --- Favorites ---
 
 	def _fav_set_colors(self, fg, bg, star=None):
 		self._fav_canvas.configure(bg=bg)
@@ -543,10 +604,12 @@ class GlyphKitApp:
 	def _fav_hover_in(self):
 		if self.current_cat != "_favorites":
 			self._fav_set_colors(C["teal"], self._fav_defaults[0])
+		self._set_status("Right-click any character to add to Favorites")
 
 	def _fav_hover_out(self):
 		if self.current_cat != "_favorites":
 			self._fav_set_colors(*self._fav_defaults[::-1])
+		self._set_status(self.status_default)
 
 	def _show_favorites(self):
 		"""Show the Favorites grid."""
@@ -556,16 +619,11 @@ class GlyphKitApp:
 			self._set_search_placeholder()
 		self._search_clearing = False
 
-		# Reset About
 		self._about_active = False
 		if hasattr(self, "status_bar"):
 			self.status_bar.itemconfig("about", fill=C["text_dim"])
 
-		# Deselect all category tabs
-		for k, lbl in self.tabs.items():
-			self._tab_borders[k].configure(bg=C["tab_border"])
-			default_bg, default_fg = self._tab_defaults[k]
-			lbl.configure(fg=default_fg, bg=default_bg)
+		self._deselect_all_tabs()
 
 		# Highlight favorites tab
 		self.current_cat = "_favorites"
@@ -580,12 +638,10 @@ class GlyphKitApp:
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
-		# Reset column configs
 		for col in range(COLUMNS):
 			self.char_frame.columnconfigure(col, weight=0, minsize=0)
 
 		if not self._favorites:
-			# Empty state hint
 			self.char_frame.columnconfigure(0, weight=1)
 			tk.Label(
 				self.char_frame,
@@ -595,7 +651,6 @@ class GlyphKitApp:
 			self._build_delete_btn(disabled=True)
 			return
 
-		# Sort favorites by global category order
 		sorted_favs = []
 		for char in self._favorites:
 			if char in self._char_order:
@@ -603,7 +658,6 @@ class GlyphKitApp:
 				sorted_favs.append((idx, char, name))
 		sorted_favs.sort(key=lambda x: x[0])
 
-		# Render character buttons
 		for i, (_idx, char, name) in enumerate(sorted_favs):
 			r, col = divmod(i, COLUMNS)
 			btn = TextCanvas(
@@ -692,11 +746,9 @@ class GlyphKitApp:
 		self._favorites.append(char)
 		self._save_config()
 		self._set_status(f"Added to Favorites: {char}  ({name})", "#40c090")
-		# Reset status after delay
 		if self._reset_timer:
 			self.root.after_cancel(self._reset_timer)
 		self._reset_timer = self.root.after(2000, self._reset_status)
-		# Refresh if viewing favorites
 		if self.current_cat == "_favorites":
 			self._render_favorites()
 
@@ -709,46 +761,114 @@ class GlyphKitApp:
 			if self._reset_timer:
 				self.root.after_cancel(self._reset_timer)
 			self._reset_timer = self.root.after(2000, self._reset_status)
-			# Auto-deactivate delete mode when no favorites left
 			if not self._favorites:
 				self._delete_mode = False
 			self._render_favorites()
 
-	def _show_cat(self, key):
-		# Clear search and restore placeholder
+	# --- Recents ---
+
+	def _recent_set_colors(self, fg, bg):
+		self._recent_canvas.configure(bg=bg)
+		self._recent_canvas.itemconfig(self._recent_icon_id, fill=fg)
+		self._recent_canvas.itemconfig(self._recent_label_id, fill=fg)
+
+	def _recent_hover_in(self):
+		if self.current_cat != "_recents":
+			self._recent_set_colors(C["teal"], self._recent_defaults[0])
+		self._set_status(f"Last {MAX_RECENTS} used characters \u2014 auto-updated on click")
+
+	def _recent_hover_out(self):
+		if self.current_cat != "_recents":
+			self._recent_set_colors(*self._recent_defaults[::-1])
+		self._set_status(self.status_default)
+
+	def _show_recents(self):
+		"""Show the Recently Used grid."""
+		self._search_clearing = True
+		self._search_var.set("")
 		if hasattr(self, "_search_entry"):
 			self._set_search_placeholder()
-		# Reset About footer state
+		self._search_clearing = False
+
 		self._about_active = False
 		if hasattr(self, "status_bar"):
 			self.status_bar.itemconfig("about", fill=C["text_dim"])
-		# Reset favorites tab + delete mode
-		self._delete_mode = False
-		self.status_default = self._default_status_text()
-		self._status_default_color = None
-		if hasattr(self, "_fav_canvas"):
-			self._fav_accent.configure(bg="#1a3a36")
-			self._fav_set_colors(self._fav_defaults[1], self._fav_defaults[0], star="\u2606")
-		# Remove delete button if present
-		if hasattr(self, "_del_btn_frame"):
-			self._del_btn_frame.destroy()
-		self.current_cat = key
-		for k, lbl in self.tabs.items():
-			if k == key:
-				self._tab_borders[k].configure(bg=C["teal_dim"])
-				lbl.configure(fg=C["teal"], bg=C["teal_dark"])
-			else:
-				self._tab_borders[k].configure(bg=C["tab_border"])
-				default_bg, default_fg = self._tab_defaults[k]
-				lbl.configure(fg=default_fg, bg=default_bg)
-		self._fill_grid(CATEGORIES[key]["chars"])
 
-	def _show_about(self):
-		"""Show compact app info that fits in the 2-row grid area."""
+		self._deselect_all_tabs()
+		self._delete_mode = False
+
+		self.current_cat = "_recents"
+		self._recent_accent.configure(bg=C["teal"])
+		self._recent_set_colors(C["teal"], C["teal_dark"])
+
+		self._render_recents()
+
+	def _render_recents(self):
+		"""Render the recently used characters grid."""
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
-		# Reset column configs from _fill_grid (minsize=36 clips labels)
+		for col in range(COLUMNS):
+			self.char_frame.columnconfigure(col, weight=0, minsize=0)
+
+		if not self._recents:
+			self.char_frame.columnconfigure(0, weight=1)
+			tk.Label(
+				self.char_frame,
+				text="Characters you use will appear here",
+				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 10),
+			).grid(row=0, column=0, sticky="w", padx=4, pady=8)
+			return
+
+		for i, char in enumerate(self._recents):
+			r, col = divmod(i, COLUMNS)
+			name = self._char_order.get(char, (0, char))[1]
+			btn = TextCanvas(
+				self.char_frame, text=char, fg=C["char"],
+				font=("Segoe UI Symbol", 13),
+				bg=C["btn"], width=BTN_SIZE, height=BTN_SIZE,
+				cursor="hand2",
+			)
+			btn.grid(row=r, column=col, padx=GAP // 2 + 1, pady=GAP // 2 + 1, sticky="nsew")
+			btn.bind("<Button-1>", lambda e, b=btn, ch=char, nm=name: self._click_char(b, ch, nm))
+			btn.bind("<Button-3>", lambda e, ch=char, nm=name: self._add_favorite(ch, nm))
+			btn.bind("<Enter>", lambda e, b=btn, ch=char, nm=name: self._hover_in(b, ch, nm))
+			btn.bind("<Leave>", lambda e, b=btn: self._hover_out(b))
+
+		for col in range(COLUMNS):
+			self.char_frame.columnconfigure(col, weight=1, minsize=BTN_SIZE)
+
+	def _add_recent(self, char):
+		"""Add a character to the front of the recents list."""
+		if char in self._recents:
+			self._recents.remove(char)
+		self._recents.insert(0, char)
+		self._recents = self._recents[:MAX_RECENTS]
+
+	# --- Category ---
+
+	def _show_cat(self, key):
+		if hasattr(self, "_search_entry"):
+			self._set_search_placeholder()
+		self._about_active = False
+		if hasattr(self, "status_bar"):
+			self.status_bar.itemconfig("about", fill=C["text_dim"])
+		self._delete_mode = False
+		self.status_default = self._default_status_text()
+		self._status_default_color = None
+
+		self._deselect_all_tabs()
+
+		self.current_cat = key
+		self._tab_borders[key].configure(bg=C["teal_dim"])
+		self.tabs[key].configure(fg=C["teal"], bg=C["teal_dark"])
+		self._fill_grid(CATEGORIES[key]["chars"])
+
+	def _show_about(self):
+		"""Show compact app info that fits in the grid area."""
+		for w in self.char_frame.winfo_children():
+			w.destroy()
+
 		for col in range(COLUMNS):
 			self.char_frame.columnconfigure(col, weight=0, minsize=0)
 		self.char_frame.columnconfigure(0, weight=1)
@@ -783,29 +903,28 @@ class GlyphKitApp:
 			bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 9),
 		).pack(side="left")
 
+		row2 = tk.Frame(self.char_frame, bg=C["bg"])
+		row2.grid(row=2, column=0, sticky="w", padx=4, pady=(0, 4))
+		tk.Label(
+			row2, text=f"Toggle: {info['hotkey']}  \u00b7  Close: Esc (while focused)",
+			bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 9),
+		).pack(side="left")
+
 	def _toggle_about(self, _event=None):
 		"""Toggle About view from footer link."""
 		if self._about_active:
-			# Return to last category
 			self._about_active = False
 			self.status_bar.itemconfig("about", fill=C["text_dim"])
 			if self.current_cat == "_favorites":
 				self._show_favorites()
+			elif self.current_cat == "_recents":
+				self._show_recents()
 			else:
 				self._show_cat(self.current_cat)
 		else:
 			self._about_active = True
 			self.status_bar.itemconfig("about", fill=C["gold_dim"])
-			# Deselect all category tabs + favorites
-			for k, lbl in self.tabs.items():
-				self._tab_borders[k].configure(bg=C["tab_border"])
-				default_bg, default_fg = self._tab_defaults[k]
-				lbl.configure(fg=default_fg, bg=default_bg)
-			if hasattr(self, "_fav_canvas"):
-				self._fav_accent.configure(bg="#1a3a36")
-				self._fav_set_colors(self._fav_defaults[1], self._fav_defaults[0], star="\u2606")
-			if hasattr(self, "_del_btn_frame"):
-				self._del_btn_frame.destroy()
+			self._deselect_all_tabs()
 			self._show_about()
 
 	# --- Character Grid ---
@@ -880,9 +999,8 @@ class GlyphKitApp:
 		self.status_bar = bar
 
 	def _default_status_text(self):
-		if self.auto_paste:
-			return "Click a character to copy & paste into active window"
-		return "Click a character to copy to clipboard"
+		mode = COPY_MODES[self._copy_mode]
+		return mode["status"]
 
 	def _set_status(self, text, color=None):
 		if color is None and text == self.status_default:
@@ -914,23 +1032,45 @@ class GlyphKitApp:
 			bg=C["btn_hover"] if self.hover_active else C["btn"]
 		))
 
-		# Copy to clipboard
-		self.root.clipboard_clear()
-		self.root.clipboard_append(char)
-		self.root.update()
+		# Track in recents
+		self._add_recent(char)
 
-		# Update status
-		self.status_default = f"Copied: {char}  ({name})"
-		self._set_status(self.status_default, C["teal"])
+		mode_key = COPY_MODES[self._copy_mode]["key"]
 
-		# Auto-paste if enabled
-		if self.auto_paste:
-			self.root.after(50, send_paste)
+		if mode_key == "html":
+			# Copy as HTML hex entity
+			value = f"&#x{ord(char):04X};"
+			self.root.clipboard_clear()
+			self.root.clipboard_append(value)
+			self.root.update()
+			self.status_default = f"Copied: {value}  ({name})"
+			self._set_status(self.status_default, C["amber"])
+		elif mode_key == "code":
+			# Copy as Unicode codepoint
+			value = f"U+{ord(char):04X}"
+			self.root.clipboard_clear()
+			self.root.clipboard_append(value)
+			self.root.update()
+			self.status_default = f"Copied: {value}  ({name})"
+			self._set_status(self.status_default, C["purple"])
+		else:
+			# Copy the actual character (copy + auto modes)
+			self.root.clipboard_clear()
+			self.root.clipboard_append(char)
+			self.root.update()
+			self.status_default = f"Copied: {char}  ({name})"
+			self._set_status(self.status_default, C["teal"])
+
+			if mode_key == "auto":
+				self.root.after(50, send_paste)
 
 		# Reset status after delay
 		if self._reset_timer:
 			self.root.after_cancel(self._reset_timer)
 		self._reset_timer = self.root.after(2000, self._reset_status)
+
+		# Save recents
+		self._save_config()
 
 	def _reset_status(self):
 		self._reset_timer = None
@@ -938,40 +1078,96 @@ class GlyphKitApp:
 		if not self.hover_active:
 			self._set_status(self.status_default)
 
-	# --- Auto-Paste Toggle + Tooltip ---
+	# --- Copy Mode Toggle ---
 
-	def _toggle_paste(self, event=None):
-		self.auto_paste = not self.auto_paste
-		if self.auto_paste:
-			self.titlebar.itemconfig(self._paste_id, text="AUTO \u25cf", fill=C["teal"])
-		else:
-			self.titlebar.itemconfig(self._paste_id, text="COPY \u25cb", fill=C["text_dim"])
-		# Update idle status text to reflect new mode
+	def _cycle_mode(self, event=None):
+		"""Cycle through the 4 copy modes."""
+		self._copy_mode = (self._copy_mode + 1) % len(COPY_MODES)
+		mode = COPY_MODES[self._copy_mode]
+		self.titlebar.itemconfig(self._mode_id, text=mode["label"], fill=mode["fg"])
 		if not self._delete_mode:
 			self.status_default = self._default_status_text()
 			self._set_status(self.status_default)
 
-	def _auto_hover_in(self):
-		self.titlebar.itemconfig("auto", fill="#fff")
-		tip = "AUTO: copies & pastes into active window" if self.auto_paste \
-			else "COPY: copies to clipboard only"
-		self._set_status(tip)
+	def _mode_hover_in(self):
+		self.titlebar.itemconfig("mode", fill="#fff")
+		mode = COPY_MODES[self._copy_mode]
+		tips = {
+			"copy": "COPY: copies character to clipboard",
+			"auto": "AUTO: copies & pastes into active window",
+			"html": "HTML: copies HTML entity (e.g. &#x00BD;)",
+			"code": "U+: copies Unicode codepoint (e.g. U+00BD)",
+		}
+		self._set_status(tips[mode["key"]])
 
-	def _auto_hover_out(self):
-		fill = C["teal"] if self.auto_paste else C["text_dim"]
-		self.titlebar.itemconfig("auto", fill=fill)
+	def _mode_hover_out(self):
+		mode = COPY_MODES[self._copy_mode]
+		self.titlebar.itemconfig("mode", fill=mode["fg"])
 		self._set_status(self.status_default)
+
+	# === Opacity ===
+
+	def _setup_opacity(self):
+		"""Set idle opacity and bind mouse enter/leave with debounce."""
+		self._opacity_timer = None
+		self.root.attributes("-alpha", IDLE_OPACITY)
+		self.root.bind("<Enter>", self._on_mouse_enter)
+		self.root.bind("<Leave>", self._on_mouse_leave)
+
+	def _on_mouse_enter(self, event=None):
+		if self._opacity_timer:
+			self.root.after_cancel(self._opacity_timer)
+			self._opacity_timer = None
+		self.root.attributes("-alpha", 1.0)
+
+	def _on_mouse_leave(self, event=None):
+		if self._opacity_timer:
+			self.root.after_cancel(self._opacity_timer)
+		self._opacity_timer = self.root.after(50, self._fade_out)
+
+	def _fade_out(self):
+		self._opacity_timer = None
+		self.root.attributes("-alpha", IDLE_OPACITY)
+
+	# === Escape to Close ===
+
+	def _on_escape(self, event=None):
+		"""Close the window on Escape, but only if it has OS keyboard focus."""
+		if self.root.focus_get() is not None:
+			self._quit()
+
+	# === Global Hotkey ===
+
+	def _setup_hotkey(self):
+		"""Start global hotkey listener thread and begin polling."""
+		start_hotkey_listener()
+		self._poll_hotkey()
+
+	def _poll_hotkey(self):
+		"""Poll for global hotkey press from the listener thread."""
+		if check_hotkey_pressed():
+			self._toggle_visibility()
+		self.root.after(100, self._poll_hotkey)
+
+	def _toggle_visibility(self):
+		"""Show or hide the window via global hotkey."""
+		if self._visible:
+			self._save_config()
+			self.root.withdraw()
+			self._visible = False
+		else:
+			self.root.deiconify()
+			self._visible = True
 
 	# === Drag & Snap ===
 
 	def _drag_start(self, event):
-		# Don't initiate drag when clicking titlebar buttons
 		items = self.titlebar.find_overlapping(
 			event.x - 2, event.y - 2, event.x + 2, event.y + 2,
 		)
 		for item in items:
 			tags = self.titlebar.gettags(item)
-			if "close" in tags or "auto" in tags:
+			if "close" in tags or "mode" in tags or "title" in tags:
 				return
 		self.drag["x"] = event.x
 		self.drag["y"] = event.y
