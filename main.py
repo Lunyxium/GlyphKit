@@ -316,6 +316,9 @@ class GlyphKitApp:
 
 	def _quit(self):
 		try:
+			# Cancel debounce and save immediately
+			if hasattr(self, "_save_timer") and self._save_timer:
+				self.root.after_cancel(self._save_timer)
 			self._save_config()
 		except Exception:
 			pass
@@ -364,8 +367,8 @@ class GlyphKitApp:
 			w.destroy()
 		self.tabs = {}
 
-		# Recompute and rebuild
-		self._load_config()
+		# Recompute layout from current config (do NOT reload from disk —
+		# in-memory state has unsaved changes from debounced saves)
 		self._compute_layout()
 		self.status_default = self._default_status_text()
 		self._build()
@@ -1942,6 +1945,10 @@ class GlyphKitApp:
 		if hasattr(self, "_pending_fade_delay"):
 			self._config["fade_delay"] = self._pending_fade_delay
 
+		# Cancel any pending debounced save and save immediately
+		if hasattr(self, "_save_timer") and self._save_timer:
+			self.root.after_cancel(self._save_timer)
+			self._save_timer = None
 		self._save_config()
 
 		# Close settings window cleanly
