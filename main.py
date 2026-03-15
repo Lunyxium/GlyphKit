@@ -1615,27 +1615,8 @@ class GlyphKitApp:
 		box_bg = C["bg"]
 		box_border = C["border"]
 
-		# --- Bottom bar: separator + Apply button ---
-		bottom = tk.Frame(win, bg=C["bg"])
-		bottom.pack(side="bottom", fill="x")
-		tk.Frame(bottom, height=2, bg=C["teal_dim"]).pack(fill="x", side="bottom")
-
-		self._apply_frame = tk.Frame(bottom, bg=C["bg"])
-		self._apply_frame.pack(fill="x", padx=pad, pady=round(2 * s))
-
-		apply_border = tk.Frame(self._apply_frame, bg=C["border"])
-		apply_border.pack(anchor="e")
-		self._apply_border = apply_border
-
-		self._apply_btn = tk.Label(
-			apply_border, text="  Apply  ",
-			bg=C["btn"], fg="#555555",
-			font=font_label, padx=round(8 * s), pady=round(2 * s),
-		)
-		self._apply_btn.pack(padx=1, pady=1)
-		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
-		self._apply_btn.bind("<Enter>", lambda e: self._apply_hover_in())
-		self._apply_btn.bind("<Leave>", lambda e: self._apply_hover_out())
+		# --- Bottom separator (between flyout and main window) ---
+		tk.Frame(win, height=2, bg=C["teal_dim"]).pack(side="bottom", fill="x")
 
 		# --- Titlebar (same style as main window) ---
 		th = self._titlebar_h
@@ -1738,7 +1719,23 @@ class GlyphKitApp:
 			), hover="Snap to nearby window edges",
 		)
 
-		# (Apply button is in the bottom bar, built above)
+		# --- Apply Button (bottom of right column) ---
+		self._apply_frame = tk.Frame(right_col, bg=C["bg"])
+		self._apply_frame.pack(side="bottom", anchor="e", pady=(round(4 * s), round(2 * s)))
+
+		apply_border = tk.Frame(self._apply_frame, bg=C["border"])
+		apply_border.pack()
+		self._apply_border = apply_border
+
+		self._apply_btn = tk.Label(
+			apply_border, text="  Apply  ",
+			bg=C["btn"], fg="#555555",
+			font=font_label, padx=round(8 * s), pady=round(2 * s),
+		)
+		self._apply_btn.pack(padx=1, pady=1)
+		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
+		self._apply_btn.bind("<Enter>", lambda e: self._apply_hover_in())
+		self._apply_btn.bind("<Leave>", lambda e: self._apply_hover_out())
 
 	def _build_setting_box(self, parent, title, bg, border_color, font_title, build_fn, hover=""):
 		"""Build a bordered settings box with title and content."""
