@@ -28,7 +28,10 @@ if getattr(sys, "frozen", False):
 else:
 	_DIR = os.path.dirname(os.path.abspath(__file__))
 	_ASSETS = _DIR
-CONFIG_PATH = os.path.join(_DIR, "config.json")
+
+_CONFIG_DIR = os.path.join(_DIR, ".glyphkit")
+os.makedirs(_CONFIG_DIR, exist_ok=True)
+CONFIG_PATH = os.path.join(_CONFIG_DIR, "config.json")
 
 
 # === Theme: Dark Grey + Teal ===
