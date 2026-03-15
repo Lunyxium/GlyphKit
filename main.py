@@ -282,7 +282,7 @@ class GlyphKitApp:
 		self._recents = self._config.get("recents", [])
 
 	def _save_config(self):
-		config = {
+		self._config.update({
 			"x": self.root.winfo_x(),
 			"y": self.root.winfo_y(),
 			"copy_mode": self._copy_mode,
@@ -293,11 +293,12 @@ class GlyphKitApp:
 			"idle_opacity": self._opacity_key,
 			"fade_delay": self._config.get("fade_delay", 50),
 			"snap_enabled": self._snap_enabled,
-			"hotkey": self._config.get("hotkey", "ctrl+alt+g"),
-		}
+		})
+		# Ensure hotkey default exists
+		self._config.setdefault("hotkey", "ctrl+alt+g")
 		try:
 			with open(CONFIG_PATH, "w") as f:
-				json.dump(config, f, indent=2, ensure_ascii=False)
+				json.dump(self._config, f, indent=2, ensure_ascii=False)
 		except OSError:
 			pass
 
@@ -427,7 +428,7 @@ class GlyphKitApp:
 		gx = cx - round(44 * self._scale)
 		self._gear_id = bar.create_text(
 			gx, h // 2, text="\u2699",
-			fill=C["text_dim"], font=("Segoe UI", gear_font_size, "bold"),
+			fill=C["text_dim"], font=("Segoe UI Symbol", gear_font_size),
 			anchor="center", tags="gear",
 		)
 		bar.tag_bind("gear", "<Button-1>", lambda e: self._toggle_settings())
@@ -1379,6 +1380,9 @@ class GlyphKitApp:
 	def _on_mouse_leave(self, event=None):
 		if self._idle_opacity >= 1.0:
 			return  # No fade when opacity is off
+		# Don't fade while settings flyout is open
+		if self._settings_win and self._settings_win.winfo_exists():
+			return
 		if self._opacity_timer:
 			self.root.after_cancel(self._opacity_timer)
 		self._opacity_timer = self.root.after(self._fade_delay, self._fade_out)
@@ -1534,13 +1538,13 @@ class GlyphKitApp:
 			self._open_settings()
 
 	def _open_settings(self):
-		fw = self.win_w
+		fw = self.win_w * 2 // 3
 		fh = self.win_h
 		main_x = self.root.winfo_x()
 		main_y = self.root.winfo_y()
 
-		# Position above main window, full width
-		fx = main_x
+		# Position above main window, right-aligned
+		fx = main_x + self.win_w - fw
 		fy = main_y - fh
 
 		# If not enough space above, open below
@@ -1598,8 +1602,8 @@ class GlyphKitApp:
 		self._draw_pattern(title_bar, fw, th)
 
 		title_bar.create_text(
-			round(14 * s), th // 2, text="\u2699 Settings",
-			fill=C["gold_dim"], font=("Segoe UI", self._font_title, "bold"),
+			round(14 * s), th // 2, text="Settings",
+			fill=C["gold_dim"], font=("Segoe UI", self._font_ui, "bold"),
 			anchor="w",
 		)
 
@@ -1689,36 +1693,36 @@ class GlyphKitApp:
 			), hover="Snap to nearby window edges",
 		)
 
-		# --- Apply Button ---
+		# --- Apply Button (always visible, greyed out until dirty) ---
 		self._apply_frame = tk.Frame(right_col, bg=C["bg"])
-		self._apply_frame.pack(fill="x", pady=(round(4 * s), 0))
+		self._apply_frame.pack(fill="x", pady=(round(6 * s), 0))
+
+		apply_border = tk.Frame(self._apply_frame, bg=C["border"])
+		apply_border.pack(anchor="e")
+		self._apply_border = apply_border
+
 		self._apply_btn = tk.Label(
-			self._apply_frame, text="  \u2713 Apply  ",
-			bg=C["teal_dark"], fg=C["teal_dim"],
-			font=font_label, cursor="hand2",
+			apply_border, text="  Apply  ",
+			bg=C["btn"], fg="#555555",
+			font=font_label, padx=round(8 * s), pady=round(3 * s),
 		)
-		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings())
-		self._apply_btn.bind("<Enter>", lambda e: (
-			self._apply_btn.configure(bg=C["teal_dim"], fg=C["bg"]),
-			self._set_status("Apply changes and restart"),
-		))
-		self._apply_btn.bind("<Leave>", lambda e: (
-			self._apply_btn.configure(bg=C["teal_dark"], fg=C["teal_dim"]),
-			self._set_status(self.status_default),
-		))
+		self._apply_btn.pack(padx=1, pady=1)
+		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
+		self._apply_btn.bind("<Enter>", lambda e: self._apply_hover_in())
+		self._apply_btn.bind("<Leave>", lambda e: self._apply_hover_out())
 
 	def _build_setting_box(self, parent, title, bg, border_color, font_title, build_fn, hover=""):
 		"""Build a bordered settings box with title and content."""
 		s = self._scale
 		border = tk.Frame(parent, bg=border_color)
-		border.pack(fill="x", pady=(0, round(6 * s)))
+		border.pack(fill="x", pady=(0, round(4 * s)))
 
 		inner_frame = tk.Frame(border, bg=bg)
 		inner_frame.pack(fill="x", padx=1, pady=1)
 
 		# Title row
 		title_row = tk.Frame(inner_frame, bg=bg)
-		title_row.pack(fill="x", padx=round(8 * s), pady=(round(6 * s), round(2 * s)))
+		title_row.pack(fill="x", padx=round(6 * s), pady=(round(4 * s), round(1 * s)))
 		lbl = tk.Label(title_row, text=title, bg=bg, fg=C["text"], font=font_title)
 		lbl.pack(anchor="w")
 		if hover:
@@ -1727,7 +1731,7 @@ class GlyphKitApp:
 
 		# Content
 		content = tk.Frame(inner_frame, bg=bg)
-		content.pack(fill="x", padx=round(8 * s), pady=(0, round(8 * s)))
+		content.pack(fill="x", padx=round(6 * s), pady=(0, round(5 * s)))
 		build_fn(content)
 
 	def _build_setting_slider(self, parent, values, labels, current_idx, attr, font_v, font_s):
@@ -1736,7 +1740,7 @@ class GlyphKitApp:
 		n = len(values)
 		setattr(self, attr, values[current_idx])
 
-		track_h = round(32 * s)
+		track_h = round(28 * s)
 		track = tk.Canvas(parent, height=track_h, bg=C["bg"], highlightthickness=0, bd=0, cursor="hand2")
 		track.pack(fill="x")
 
@@ -1856,25 +1860,48 @@ class GlyphKitApp:
 		toggle.bind("<Button-1>", _click)
 		_draw()
 
+	def _apply_hover_in(self):
+		if self._settings_dirty:
+			self._apply_btn.configure(bg=C["gold"], fg=C["bg"])
+			self._apply_border.configure(bg=C["gold_dim"])
+			self._set_status("Apply changes and restart")
+		else:
+			self._set_status("No changes to apply")
+
+	def _apply_hover_out(self):
+		if self._settings_dirty:
+			self._apply_btn.configure(bg=C["gold_dark"], fg=C["gold"])
+			self._apply_border.configure(bg=C["gold_dim"])
+		else:
+			self._apply_btn.configure(bg=C["btn"], fg="#555555")
+			self._apply_border.configure(bg=C["border"])
+		self._set_status(self.status_default)
+
 	def _mark_settings_dirty(self):
-		"""Show the Apply button when settings have been changed."""
+		"""Activate the Apply button when settings have been changed."""
 		self._settings_dirty = True
 		if hasattr(self, "_apply_btn"):
-			self._apply_btn.pack(anchor="e")
+			self._apply_btn.configure(bg=C["gold_dark"], fg=C["gold"], cursor="hand2")
+			self._apply_border.configure(bg=C["gold_dim"])
 
 	def _apply_settings(self):
 		"""Apply changed settings and rebuild the UI."""
 		try:
-			# Collect pending values
+			# Write pending values into instance vars AND config so both
+			# _save_config and _load_config/_compute_layout see them
 			if hasattr(self, "_pending_scale"):
+				self._user_scale = self._pending_scale
 				self._config["user_scale"] = self._pending_scale
 			if hasattr(self, "_pending_opacity"):
+				self._opacity_key = self._pending_opacity
 				self._config["idle_opacity"] = self._pending_opacity
 			if hasattr(self, "_pending_fade_delay"):
 				self._config["fade_delay"] = self._pending_fade_delay
 			if hasattr(self, "_pending_glyph"):
+				self._glyph_key = self._pending_glyph
 				self._config["glyph_size"] = self._pending_glyph
 			if hasattr(self, "_pending_snap"):
+				self._snap_enabled = self._pending_snap
 				self._config["snap_enabled"] = self._pending_snap
 
 			# Save config first
