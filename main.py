@@ -13,7 +13,7 @@ import tkinter.font as tkFont
 from characters import CATEGORIES
 from win32_utils import (
 	enable_dpi_awareness, set_no_activate, send_paste,
-	get_work_area, force_foreground,
+	get_work_area, force_foreground, get_system_dpi, get_foreground_window_rect,
 	start_hotkey_listener, check_hotkey_pressed, stop_hotkey_listener,
 )
 
@@ -64,7 +64,7 @@ C = {
 
 APP_INFO = {
 	"name": "GlyphKit",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"author": "Matt B\u00e4umli",
 	"handle": "Lunyxium",
 	"github": "https://github.com/Lunyxium",
@@ -73,18 +73,33 @@ APP_INFO = {
 	"hotkey": "Ctrl + Alt + G",
 }
 
-# === Layout ===
+# === Layout Defaults (designed at 150% / 144 DPI) ===
 
-COLUMNS = 27
-BTN_SIZE = 36
-GAP = 3
-PAD = 10
-SNAP_DIST = 60
-TITLEBAR_H = 36
-STATUS_H = 38
+DESIGN_DPI = 144
+DESIGN_COLUMNS = 27
+DESIGN_BTN = 36
+DESIGN_GAP = 3
+DESIGN_PAD = 10
+DESIGN_SNAP_DIST = 60
+DESIGN_TITLEBAR_H = 36
+DESIGN_STATUS_H = 38
 GRID_ROWS = 3
-IDLE_OPACITY = 0.66
 MAX_RECENTS = 24
+
+GLYPH_PRESETS = {
+	"S": {"font": 11, "btn": 30},
+	"M": {"font": 13, "btn": 36},
+	"L": {"font": 16, "btn": 44},
+}
+
+OPACITY_PRESETS = {
+	"off":  1.00,
+	"high": 0.80,
+	"mid":  0.66,
+	"low":  0.50,
+}
+
+SCALE_STEPS = [0.80, 0.90, 1.00, 1.10, 1.25]
 
 # Tab rows: grouped by theme. Only categories present in CATEGORIES are shown.
 TAB_ROWS = [
@@ -151,7 +166,6 @@ class GlyphKitApp:
 		self.char_frame = None
 		self.status_bar = None
 		self.drag = {"x": 0, "y": 0, "active": False}
-		self.status_default = self._default_status_text()
 		self._status_default_color = None
 		self.hover_active = False
 		self._reset_timer = None
@@ -164,14 +178,73 @@ class GlyphKitApp:
 		self._search_var = tk.StringVar()
 		self._search_var.trace_add("write", self._on_search)
 		self._visible = True
-
-		self.win_w = COLUMNS * (BTN_SIZE + GAP) + GAP + PAD * 2
-		self.win_h = 0
+		self._settings_win = None
 
 		self._load_config()
+		self._compute_layout()
+		self.status_default = self._default_status_text()
+
 		self._build()
 		self.root.deiconify()
 		self.root.after(50, self._init_hwnd)
+
+	# === Scale Engine ===
+
+	def _compute_layout(self):
+		"""Compute all layout dimensions from DPI + user settings."""
+		dpi = get_system_dpi()
+		auto_scale = dpi / DESIGN_DPI
+		user_scale = self._config.get("user_scale", 1.0)
+		if user_scale not in SCALE_STEPS:
+			user_scale = 1.0
+		self._scale = auto_scale * user_scale
+		self._user_scale = user_scale
+
+		glyph_key = self._config.get("glyph_size", "M")
+		if glyph_key not in GLYPH_PRESETS:
+			glyph_key = "M"
+		glyph = GLYPH_PRESETS[glyph_key]
+		self._glyph_key = glyph_key
+
+		s = self._scale
+		self._btn_size = round(glyph["btn"] * s)
+		self._glyph_font_size = round(glyph["font"] * s)
+		self._gap = max(1, round(DESIGN_GAP * s))
+		self._pad = round(DESIGN_PAD * s)
+		self._titlebar_h = round(DESIGN_TITLEBAR_H * s)
+		self._status_h = round(DESIGN_STATUS_H * s)
+		self._snap_dist = round(DESIGN_SNAP_DIST * s)
+
+		# Window width: fixed per scale (based on 27-col M-size design)
+		design_w = DESIGN_COLUMNS * (DESIGN_BTN + DESIGN_GAP) + DESIGN_GAP + DESIGN_PAD * 2
+		self.win_w = round(design_w * s)
+
+		# Columns: derived from actual btn_size (adjusts for glyph size)
+		usable = self.win_w - 2 * self._pad - self._gap
+		self._columns = max(1, usable // (self._btn_size + self._gap))
+
+		# Opacity
+		opacity_key = self._config.get("idle_opacity", "mid")
+		if opacity_key not in OPACITY_PRESETS:
+			opacity_key = "mid"
+		self._opacity_key = opacity_key
+		self._idle_opacity = OPACITY_PRESETS[opacity_key]
+
+		# Snapping
+		self._snap_enabled = self._config.get("snap_enabled", True)
+		self._snap_threshold = 15
+
+		# Scaled font sizes for UI elements
+		self._font_ui = round(9 * s)
+		self._font_ui_small = round(8 * s)
+		self._font_title = round(10 * s)
+		self._font_close = round(14 * s)
+		self._font_tab = round(9 * s)
+		self._font_search = round(9 * s)
+		self._font_search_icon = round(11 * s)
+		self._font_about_title = round(12 * s)
+		self._font_star = round(11 * s)
+		self._font_icon = round(10 * s)
 
 	def _init_hwnd(self):
 		# Opacity first — attributes("-alpha") can reset extended window styles
@@ -207,7 +280,6 @@ class GlyphKitApp:
 			self._copy_mode = 1
 		self._favorites = self._config.get("favorites", [])
 		self._recents = self._config.get("recents", [])
-		self.status_default = self._default_status_text()
 
 	def _save_config(self):
 		config = {
@@ -216,6 +288,12 @@ class GlyphKitApp:
 			"copy_mode": self._copy_mode,
 			"favorites": self._favorites,
 			"recents": self._recents,
+			"user_scale": self._user_scale,
+			"glyph_size": self._glyph_key,
+			"idle_opacity": self._opacity_key,
+			"fade_delay": self._config.get("fade_delay", 50),
+			"snap_enabled": self._snap_enabled,
+			"hotkey": self._config.get("hotkey", "ctrl+alt+g"),
 		}
 		try:
 			with open(CONFIG_PATH, "w") as f:
@@ -252,15 +330,42 @@ class GlyphKitApp:
 		self._lock_layout()
 		self._apply_config()
 
+	def _rebuild(self):
+		"""Destroy and rebuild the entire UI with current scale settings."""
+		# Save state
+		cat = self.current_cat
+		x, y = self.root.winfo_x(), self.root.winfo_y()
+
+		# Destroy all children
+		for w in self.root.winfo_children():
+			w.destroy()
+		self.tabs = {}
+
+		# Recompute and rebuild
+		self._compute_layout()
+		self._build()
+
+		# Restore position
+		self.root.geometry(f"{self.win_w}x{self.win_h}+{x}+{y}")
+
+		# Restore category
+		if cat == "_favorites":
+			self._show_favorites()
+		elif cat == "_recents":
+			self._show_recents()
+		elif cat in CATEGORIES:
+			self._show_cat(cat)
+
+		# Reapply opacity and window styles
+		self.root.attributes("-alpha", self._idle_opacity)
+		self.root.after(10, lambda: set_no_activate(self.root))
+
 	def _lock_layout(self):
 		"""Lock grid height and set explicit window geometry."""
 		self.root.update()
-		children = self.char_frame.winfo_children()
-		if children:
-			row_h = children[0].winfo_reqheight() + (GAP // 2 + 1) * 2
-		else:
-			row_h = BTN_SIZE + 4
-		grid_h = GRID_ROWS * row_h + 8
+		gpad = self._gap // 2 + 1
+		row_h = self._btn_size + gpad * 2
+		grid_h = GRID_ROWS * row_h + round(8 * self._scale)
 		self.grid_container.configure(height=grid_h)
 		self.grid_container.pack_propagate(False)
 		self.root.update()
@@ -282,21 +387,22 @@ class GlyphKitApp:
 	# --- Titlebar ---
 
 	def _build_titlebar(self):
+		h = self._titlebar_h
 		bar = tk.Canvas(
-			self.root, height=TITLEBAR_H, width=self.win_w,
+			self.root, height=h, width=self.win_w,
 			bg=C["titlebar"], highlightthickness=0,
 		)
 		bar.pack(fill="x")
-		self._draw_pattern(bar, self.win_w, TITLEBAR_H)
+		self._draw_pattern(bar, self.win_w, h)
 
 		bar.create_text(
-			14, TITLEBAR_H // 2, text="GlyphKit",
-			fill=C["teal_dim"], font=("Segoe UI", 10, "bold"),
+			round(14 * self._scale), h // 2, text="GlyphKit",
+			fill=C["teal_dim"], font=("Segoe UI", self._font_title, "bold"),
 			anchor="w", tags="title",
 		)
 		bar.tag_bind("title", "<Enter>", lambda e: (
 			bar.itemconfig("title", fill=C["teal"]),
-			self._set_status(f"Toggle: Ctrl+Alt+G  \u00b7  Close: Esc (while focused)"),
+			self._set_status(f"Toggle: Ctrl+Alt+G  ·  Close: Esc (while focused)"),
 		))
 		bar.tag_bind("title", "<Leave>", lambda e: (
 			bar.itemconfig("title", fill=C["teal_dim"]),
@@ -304,21 +410,32 @@ class GlyphKitApp:
 		))
 
 		# --- Close button ---
-		cx = self.win_w - 20
+		cx = self.win_w - round(20 * self._scale)
 		bar.create_text(
-			cx, TITLEBAR_H // 2 - 2, text="\u00d7",
-			fill=C["text_dim"], font=("Segoe UI", 14), anchor="center", tags="close",
+			cx, h // 2 - 2, text="×",
+			fill=C["text_dim"], font=("Segoe UI", self._font_close), anchor="center", tags="close",
 		)
 		bar.tag_bind("close", "<Button-1>", lambda e: self._quit())
 		bar.tag_bind("close", "<Enter>", lambda e: bar.itemconfig("close", fill="#ff6b6b"))
 		bar.tag_bind("close", "<Leave>", lambda e: bar.itemconfig("close", fill=C["text_dim"]))
 
+		# --- Settings gear ---
+		gx = cx - round(28 * self._scale)
+		self._gear_id = bar.create_text(
+			gx, h // 2, text="⚙",
+			fill=C["text_dim"], font=("Segoe UI", self._font_icon),
+			anchor="center", tags="gear",
+		)
+		bar.tag_bind("gear", "<Button-1>", lambda e: self._toggle_settings())
+		bar.tag_bind("gear", "<Enter>", lambda e: self._gear_hover_in())
+		bar.tag_bind("gear", "<Leave>", lambda e: self._gear_hover_out())
+
 		# --- Copy mode toggle (cycles through 4 modes) ---
-		ax = cx - 56
+		ax = gx - round(56 * self._scale)
 		mode = COPY_MODES[self._copy_mode]
 		self._mode_id = bar.create_text(
-			ax, TITLEBAR_H // 2, text=mode["label"],
-			fill=mode["fg"], font=("Segoe UI", 8, "bold"),
+			ax, h // 2, text=mode["label"],
+			fill=mode["fg"], font=("Segoe UI", self._font_ui_small, "bold"),
 			anchor="center", tags="mode",
 		)
 		bar.tag_bind("mode", "<Button-1>", self._cycle_mode)
@@ -332,9 +449,19 @@ class GlyphKitApp:
 
 		self.titlebar = bar
 
+	def _gear_hover_in(self):
+		is_open = self._settings_win and self._settings_win.winfo_exists()
+		self.titlebar.itemconfig("gear", fill=C["teal"])
+		self._set_status("Close settings" if is_open else "Open settings")
+
+	def _gear_hover_out(self):
+		is_open = self._settings_win and self._settings_win.winfo_exists()
+		self.titlebar.itemconfig("gear", fill=C["teal"] if is_open else C["text_dim"])
+		self._set_status(self.status_default)
+
 	def _draw_pattern(self, canvas, w, h):
 		"""Draw subtle crosshatch pattern on canvas chrome."""
-		spacing = 14
+		spacing = round(14 * self._scale)
 		col = C["pattern"]
 		for i in range(-h, w + h, spacing):
 			canvas.create_line(i, 0, i + h, h, fill=col, width=1)
@@ -345,11 +472,11 @@ class GlyphKitApp:
 	def _make_tab(self, parent, key, text, side="left"):
 		"""Create a button-style tab with a 1px border frame."""
 		border = tk.Frame(parent, bg=C["tab_border"])
-		border.pack(side=side, padx=3)
+		border.pack(side=side, padx=round(3 * self._scale))
 		bg = C["tab"]
 		fg = C["text_dim"]
-		font = ("Consolas", 9)
-		f = tkFont.Font(family="Consolas", size=9)
+		font = ("Consolas", self._font_tab)
+		f = tkFont.Font(family="Consolas", size=self._font_tab)
 		tw = f.measure(text) + 4
 		th = f.metrics("ascent") + f.metrics("descent") + 6
 		tab = TextCanvas(
@@ -373,11 +500,11 @@ class GlyphKitApp:
 		self._tab_borders = {}
 		self._tab_defaults = {}
 		outer = tk.Frame(self.root, bg=C["bg"])
-		outer.pack(fill="x", pady=(6, 4))
+		outer.pack(fill="x", pady=(round(6 * self._scale), round(4 * self._scale)))
 
 		for row_keys in TAB_ROWS:
 			row_frame = tk.Frame(outer, bg=C["bg"])
-			row_frame.pack(fill="x", pady=3, padx=PAD)
+			row_frame.pack(fill="x", pady=round(3 * self._scale), padx=self._pad)
 
 			# Recent + Favorites right-aligned on first row
 			if row_keys is TAB_ROWS[0]:
@@ -403,7 +530,7 @@ class GlyphKitApp:
 		self._search_glow_color = C["teal_dark"]
 
 		self._search_glow = tk.Frame(parent, bg=C["bg"])
-		self._search_glow.pack(side="right", padx=(6, 3))
+		self._search_glow.pack(side="right", padx=(round(6 * self._scale), round(3 * self._scale)))
 
 		self._search_border = tk.Frame(self._search_glow, bg=self._search_border_idle)
 		self._search_border.pack(padx=1, pady=1)
@@ -413,17 +540,17 @@ class GlyphKitApp:
 
 		self._search_icon = tk.Label(
 			inner, text="\U0001f50d", bg=self._search_bg, fg="#506b65",
-			font=("Segoe UI", 11),
+			font=("Segoe UI", self._font_search_icon),
 		)
-		self._search_icon.pack(side="left", padx=(5, 0), pady=(0, 1))
+		self._search_icon.pack(side="left", padx=(round(5 * self._scale), 0), pady=(0, 1))
 
 		self._search_entry = tk.Entry(
 			inner, textvariable=self._search_var,
 			bg=self._search_bg, fg="#b0b0b0", insertbackground=C["teal"],
-			font=("Segoe UI", 9), width=18,
+			font=("Segoe UI", self._font_search), width=18,
 			relief="flat", bd=0,
 		)
-		self._search_entry.pack(side="left", padx=(2, 6), pady=2)
+		self._search_entry.pack(side="left", padx=(2, round(6 * self._scale)), pady=2)
 
 		self._search_entry.bind("<Button-1>", self._search_activate)
 		self._search_entry.bind("<FocusOut>", self._search_focus_out)
@@ -499,12 +626,12 @@ class GlyphKitApp:
 		else:
 			for w in self.char_frame.winfo_children():
 				w.destroy()
-			for col in range(COLUMNS):
+			for col in range(self._columns):
 				self.char_frame.columnconfigure(col, weight=0, minsize=0)
 			self.char_frame.columnconfigure(0, weight=1)
 			tk.Label(
 				self.char_frame, text="No matches found",
-				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 10),
+				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", self._font_ui),
 			).grid(row=0, column=0, sticky="w", padx=4, pady=8)
 
 	# --- Tab Deselection Helper ---
@@ -514,7 +641,7 @@ class GlyphKitApp:
 		for k, lbl in self.tabs.items():
 			self._tab_borders[k].configure(bg=C["tab_border"])
 			default_bg, default_fg = self._tab_defaults[k]
-			lbl.configure(fg=default_fg, bg=default_bg, font=("Consolas", 9))
+			lbl.configure(fg=default_fg, bg=default_bg, font=("Consolas", self._font_tab))
 		if hasattr(self, "_fav_canvas"):
 			self._fav_accent.configure(bg="#1a3a36")
 			self._fav_set_colors(*self._fav_defaults, star="\u2606")
@@ -530,12 +657,12 @@ class GlyphKitApp:
 
 	def _build_special_tabs(self, parent):
 		"""Build Recent and Favorites buttons, right-aligned on tab row 1."""
-		tab_font = ("Consolas", 9)
-		star_font = ("Segoe UI", 11)
-		icon_font = ("Segoe UI", 10)
-		tf = tkFont.Font(family="Consolas", size=9)
-		sf = tkFont.Font(family="Segoe UI", size=11)
-		rif = tkFont.Font(family="Segoe UI", size=10)
+		tab_font = ("Consolas", self._font_tab)
+		star_font = ("Segoe UI", self._font_star)
+		icon_font = ("Segoe UI", self._font_icon)
+		tf = tkFont.Font(family="Consolas", size=self._font_tab)
+		sf = tkFont.Font(family="Segoe UI", size=self._font_star)
+		rif = tkFont.Font(family="Segoe UI", size=self._font_icon)
 		tab_h = tf.metrics("ascent") + tf.metrics("descent") + 6
 
 		fav_bg = "#1a2422"
@@ -653,7 +780,7 @@ class GlyphKitApp:
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
-		for col in range(COLUMNS):
+		for col in range(self._columns):
 			self.char_frame.columnconfigure(col, weight=0, minsize=0)
 
 		if not self._favorites:
@@ -661,7 +788,7 @@ class GlyphKitApp:
 			tk.Label(
 				self.char_frame,
 				text="Right-click any character to add it here",
-				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 10),
+				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", self._font_ui),
 			).grid(row=0, column=0, sticky="w", padx=4, pady=8)
 			self._build_delete_btn(disabled=True)
 			return
@@ -673,15 +800,16 @@ class GlyphKitApp:
 				sorted_favs.append((idx, char, name))
 		sorted_favs.sort(key=lambda x: x[0])
 
+		gpad = self._gap // 2 + 1
 		for i, (_idx, char, name) in enumerate(sorted_favs):
-			r, col = divmod(i, COLUMNS)
+			r, col = divmod(i, self._columns)
 			btn = TextCanvas(
 				self.char_frame, text=char, fg=C["char"],
-				font=("Segoe UI Symbol", 13),
-				bg=C["btn"], width=BTN_SIZE, height=BTN_SIZE,
+				font=("Segoe UI Symbol", self._glyph_font_size),
+				bg=C["btn"], width=self._btn_size, height=self._btn_size,
 				cursor="hand2",
 			)
-			btn.grid(row=r, column=col, padx=GAP // 2 + 1, pady=GAP // 2 + 1, sticky="nsew")
+			btn.grid(row=r, column=col, padx=gpad, pady=gpad, sticky="nsew")
 			if self._delete_mode:
 				btn.bind("<Button-1>", lambda e, ch=char, nm=name: self._remove_favorite(ch, nm))
 				btn.bind("<Enter>", lambda e, b=btn, nm=name: (
@@ -693,8 +821,8 @@ class GlyphKitApp:
 				btn.bind("<Enter>", lambda e, b=btn, ch=char, nm=name: self._hover_in(b, ch, nm))
 			btn.bind("<Leave>", lambda e, b=btn: self._hover_out(b))
 
-		for col in range(COLUMNS):
-			self.char_frame.columnconfigure(col, weight=1, minsize=BTN_SIZE)
+		for col in range(self._columns):
+			self.char_frame.columnconfigure(col, weight=1, minsize=self._btn_size)
 
 		self._build_delete_btn(disabled=False)
 
@@ -819,7 +947,7 @@ class GlyphKitApp:
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
-		for col in range(COLUMNS):
+		for col in range(self._columns):
 			self.char_frame.columnconfigure(col, weight=0, minsize=0)
 
 		if not self._recents:
@@ -827,27 +955,28 @@ class GlyphKitApp:
 			tk.Label(
 				self.char_frame,
 				text="Characters you use will appear here",
-				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", 10),
+				bg=C["bg"], fg=C["text_dim"], font=("Segoe UI", self._font_ui),
 			).grid(row=0, column=0, sticky="w", padx=4, pady=8)
 			return
 
+		gpad = self._gap // 2 + 1
 		for i, char in enumerate(self._recents):
-			r, col = divmod(i, COLUMNS)
+			r, col = divmod(i, self._columns)
 			name = self._char_order.get(char, (0, char))[1]
 			btn = TextCanvas(
 				self.char_frame, text=char, fg=C["char"],
-				font=("Segoe UI Symbol", 13),
-				bg=C["btn"], width=BTN_SIZE, height=BTN_SIZE,
+				font=("Segoe UI Symbol", self._glyph_font_size),
+				bg=C["btn"], width=self._btn_size, height=self._btn_size,
 				cursor="hand2",
 			)
-			btn.grid(row=r, column=col, padx=GAP // 2 + 1, pady=GAP // 2 + 1, sticky="nsew")
+			btn.grid(row=r, column=col, padx=gpad, pady=gpad, sticky="nsew")
 			btn.bind("<Button-1>", lambda e, b=btn, ch=char, nm=name: self._click_char(b, ch, nm))
 			btn.bind("<Button-3>", lambda e, ch=char, nm=name: self._add_favorite(ch, nm))
 			btn.bind("<Enter>", lambda e, b=btn, ch=char, nm=name: self._hover_in(b, ch, nm))
 			btn.bind("<Leave>", lambda e, b=btn: self._hover_out(b))
 
-		for col in range(COLUMNS):
-			self.char_frame.columnconfigure(col, weight=1, minsize=BTN_SIZE)
+		for col in range(self._columns):
+			self.char_frame.columnconfigure(col, weight=1, minsize=self._btn_size)
 
 		self._build_clear_btn()
 
@@ -922,7 +1051,7 @@ class GlyphKitApp:
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
-		for col in range(COLUMNS):
+		for col in range(self._columns):
 			self.char_frame.columnconfigure(col, weight=0, minsize=0)
 		self.char_frame.columnconfigure(0, weight=1)
 
@@ -934,7 +1063,7 @@ class GlyphKitApp:
 		tk.Label(
 			self.char_frame,
 			text=f"{info['name']}  v{info['version']}",
-			bg=C["bg"], fg=C["teal"], font=("Segoe UI", 12, "bold"), anchor="w",
+			bg=C["bg"], fg=C["teal"], font=("Segoe UI", self._font_about_title, "bold"), anchor="w",
 		).grid(row=0, column=0, sticky="w", padx=4, pady=(4, 2))
 
 		# Row 1: Author + GitHub link + license + stats
@@ -943,12 +1072,12 @@ class GlyphKitApp:
 
 		tk.Label(
 			row1, text=f"{info['author']}  /  ",
-			bg=C["bg"], fg=dim, font=("Segoe UI", 9),
+			bg=C["bg"], fg=dim, font=("Segoe UI", self._font_ui),
 		).pack(side="left")
 
 		handle = tk.Label(
 			row1, text=info["handle"],
-			bg=C["bg"], fg=C["teal_dim"], font=("Segoe UI", 9, "underline"), cursor="hand2",
+			bg=C["bg"], fg=C["teal_dim"], font=("Segoe UI", self._font_ui, "underline"), cursor="hand2",
 		)
 		handle.pack(side="left")
 		handle.bind("<Button-1>", lambda e: os.startfile(info["github"]))
@@ -957,7 +1086,7 @@ class GlyphKitApp:
 
 		tk.Label(
 			row1, text=f"{sep}{info['license']} License{sep}433 glyphs / 13 categories",
-			bg=C["bg"], fg=dim, font=("Segoe UI", 9),
+			bg=C["bg"], fg=dim, font=("Segoe UI", self._font_ui),
 		).pack(side="left")
 
 		# Row 2: Shortcuts + stack
@@ -966,7 +1095,7 @@ class GlyphKitApp:
 		tk.Label(
 			row2,
 			text=f"Toggle: {info['hotkey']}{sep}Close: Esc{sep}Python + tkinter + ctypes",
-			bg=C["bg"], fg=dim, font=("Segoe UI", 9),
+			bg=C["bg"], fg=dim, font=("Segoe UI", self._font_ui),
 		).pack(side="left")
 
 	def _toggle_about(self, _event=None):
@@ -989,61 +1118,100 @@ class GlyphKitApp:
 	# --- Character Grid ---
 
 	def _build_grid(self):
-		self.grid_container = tk.Frame(self.root, bg=C["bg"], padx=PAD)
-		self.grid_container.pack(fill="both", expand=True, pady=4)
-		self.char_frame = tk.Frame(self.grid_container, bg=C["bg"])
-		self.char_frame.pack(fill="x", anchor="n")
+		self.grid_container = tk.Frame(self.root, bg=C["bg"], padx=self._pad)
+		self.grid_container.pack(fill="both", expand=True, pady=round(4 * self._scale))
+
+		self._grid_canvas = tk.Canvas(
+			self.grid_container, bg=C["bg"], highlightthickness=0, bd=0,
+		)
+		self._grid_canvas.pack(fill="both", expand=True)
+
+		self.char_frame = tk.Frame(self._grid_canvas, bg=C["bg"])
+		self._grid_canvas_win = self._grid_canvas.create_window(
+			(0, 0), window=self.char_frame, anchor="nw",
+		)
+
+		self.char_frame.bind("<Configure>", self._on_grid_frame_configure)
+		self._grid_canvas.bind("<Configure>", self._on_grid_canvas_configure)
+		self._grid_canvas.bind("<Enter>", lambda e: self._bind_mousewheel())
+		self._grid_canvas.bind("<Leave>", lambda e: self._unbind_mousewheel())
+
+	def _on_grid_frame_configure(self, _event=None):
+		self._grid_canvas.configure(scrollregion=self._grid_canvas.bbox("all"))
+
+	def _on_grid_canvas_configure(self, event):
+		self._grid_canvas.itemconfig(self._grid_canvas_win, width=event.width)
+
+	def _bind_mousewheel(self):
+		self._grid_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+	def _unbind_mousewheel(self):
+		self._grid_canvas.unbind_all("<MouseWheel>")
+
+	def _on_mousewheel(self, event):
+		self._grid_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
 	def _fill_grid(self, chars):
+		# Hide frame during population to prevent loading flicker
+		self.char_frame.pack_propagate(False) if self.char_frame.winfo_manager() == "pack" else None
+		self._grid_canvas.itemconfig(self._grid_canvas_win, state="hidden")
+
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
+		gpad = self._gap // 2 + 1
 		for i, (char, name) in enumerate(chars):
-			r, col = divmod(i, COLUMNS)
+			r, col = divmod(i, self._columns)
 			btn = TextCanvas(
 				self.char_frame, text=char, fg=C["char"],
-				font=("Segoe UI Symbol", 13),
-				bg=C["btn"], width=BTN_SIZE, height=BTN_SIZE,
+				font=("Segoe UI Symbol", self._glyph_font_size),
+				bg=C["btn"], width=self._btn_size, height=self._btn_size,
 				cursor="hand2",
 			)
-			btn.grid(row=r, column=col, padx=GAP // 2 + 1, pady=GAP // 2 + 1, sticky="nsew")
+			btn.grid(row=r, column=col, padx=gpad, pady=gpad, sticky="nsew")
 			btn.bind("<Button-1>", lambda e, b=btn, ch=char, nm=name: self._click_char(b, ch, nm))
 			btn.bind("<Button-3>", lambda e, ch=char, nm=name: self._add_favorite(ch, nm))
 			btn.bind("<Enter>", lambda e, b=btn, ch=char, nm=name: self._hover_in(b, ch, nm))
 			btn.bind("<Leave>", lambda e, b=btn: self._hover_out(b))
 
-		for col in range(COLUMNS):
-			self.char_frame.columnconfigure(col, weight=1, minsize=BTN_SIZE)
+		for col in range(self._columns):
+			self.char_frame.columnconfigure(col, weight=1, minsize=self._btn_size)
+
+		# Show frame after population
+		self._grid_canvas.itemconfig(self._grid_canvas_win, state="normal")
+		self._grid_canvas.yview_moveto(0)
 
 	# --- Status Bar ---
 
 	def _build_status(self):
+		h = self._status_h
 		bar = tk.Canvas(
-			self.root, height=STATUS_H, width=self.win_w,
+			self.root, height=h, width=self.win_w,
 			bg=C["titlebar"], highlightthickness=0,
 		)
 		bar.pack(fill="x", side="bottom")
-		self._draw_pattern(bar, self.win_w, STATUS_H)
+		self._draw_pattern(bar, self.win_w, h)
 
 		self._status_id = bar.create_text(
-			14, STATUS_H // 2, text=self.status_default,
-			fill=C["text_dim"], font=("Segoe UI", 9), anchor="w",
+			round(14 * self._scale), h // 2, text=self.status_default,
+			fill=C["text_dim"], font=("Segoe UI", self._font_ui), anchor="w",
 		)
 
 		bar.create_text(
-			self.win_w - 14, STATUS_H // 2, text="\u00a9 2026 Lunyxium",
-			fill=C["text_dim"], font=("Segoe UI", 9), anchor="e",
+			self.win_w - round(14 * self._scale), h // 2, text="\u00a9 2026 Lunyxium",
+			fill=C["text_dim"], font=("Segoe UI", self._font_ui), anchor="e",
 		)
 
+		sep_x = self.win_w - round(150 * self._scale)
 		bar.create_text(
-			self.win_w - 150, STATUS_H // 2, text="\u25aa",
-			fill=C["border"], font=("Segoe UI", 6), anchor="center",
+			sep_x, h // 2, text="\u25aa",
+			fill=C["border"], font=("Segoe UI", max(5, round(6 * self._scale))), anchor="center",
 		)
 
 		# About link in footer
 		self._about_id = bar.create_text(
-			self.win_w - 174, STATUS_H // 2, text="\u2139 About",
-			fill=C["text_dim"], font=("Segoe UI", 9), anchor="e", tags="about",
+			sep_x - round(24 * self._scale), h // 2, text="\u2139 About",
+			fill=C["text_dim"], font=("Segoe UI", self._font_ui), anchor="e", tags="about",
 		)
 		self._about_active = False
 		bar.tag_bind("about", "<Button-1>", self._toggle_about)
@@ -1170,7 +1338,8 @@ class GlyphKitApp:
 	def _setup_opacity(self):
 		"""Set idle opacity and bind mouse enter/leave with debounce."""
 		self._opacity_timer = None
-		self.root.attributes("-alpha", IDLE_OPACITY)
+		self._fade_delay = self._config.get("fade_delay", 50)
+		self.root.attributes("-alpha", self._idle_opacity)
 		self.root.bind("<Enter>", self._on_mouse_enter)
 		self.root.bind("<Leave>", self._on_mouse_leave)
 
@@ -1181,13 +1350,15 @@ class GlyphKitApp:
 		self.root.attributes("-alpha", 1.0)
 
 	def _on_mouse_leave(self, event=None):
+		if self._idle_opacity >= 1.0:
+			return  # No fade when opacity is off
 		if self._opacity_timer:
 			self.root.after_cancel(self._opacity_timer)
-		self._opacity_timer = self.root.after(50, self._fade_out)
+		self._opacity_timer = self.root.after(self._fade_delay, self._fade_out)
 
 	def _fade_out(self):
 		self._opacity_timer = None
-		self.root.attributes("-alpha", IDLE_OPACITY)
+		self.root.attributes("-alpha", self._idle_opacity)
 
 	# === Escape to Close ===
 
@@ -1219,7 +1390,7 @@ class GlyphKitApp:
 			self.root.deiconify()
 			self._visible = True
 			# Reapply opacity then styles — alpha can strip WS_EX flags
-			self.root.attributes("-alpha", IDLE_OPACITY)
+			self.root.attributes("-alpha", self._idle_opacity)
 			self.root.after(10, lambda: set_no_activate(self.root))
 
 	# === Drag & Snap ===
@@ -1230,7 +1401,7 @@ class GlyphKitApp:
 		)
 		for item in items:
 			tags = self.titlebar.gettags(item)
-			if "close" in tags or "mode" in tags or "title" in tags:
+			if "close" in tags or "mode" in tags or "title" in tags or "gear" in tags:
 				return
 		self.drag["x"] = event.x
 		self.drag["y"] = event.y
@@ -1242,13 +1413,64 @@ class GlyphKitApp:
 			return
 		x = self.root.winfo_x() + (event.x - self.drag["x"])
 		y = self.root.winfo_y() + (event.y - self.drag["y"])
+
+		# Window snapping (top/bottom of foreground window)
+		if self._snap_enabled:
+			x, y = self._apply_window_snap(x, y)
+
 		self.root.geometry(f"{self.win_w}x{self.win_h}+{x}+{y}")
+
+		# Close settings flyout during drag
+		if self._settings_win and self._settings_win.winfo_exists():
+			self._close_settings()
+
+	def _apply_window_snap(self, x, y):
+		"""Snap to top/bottom edges of the foreground window."""
+		threshold = self._snap_threshold
+		my_top = y
+		my_bottom = y + self.win_h
+
+		# Snap to taskbar / work area bottom
+		_, work_top, _, work_bottom = get_work_area()
+		if abs(my_bottom - work_bottom) < threshold:
+			y = work_bottom - self.win_h
+			return x, y
+		if abs(my_top - work_top) < threshold:
+			y = work_top
+			return x, y
+
+		# Snap to foreground window edges
+		target = get_foreground_window_rect()
+		if not target:
+			return x, y
+		tl, tt, tr, tb, thwnd = target
+		if hasattr(self, "_hwnd") and thwnd == self._hwnd:
+			return x, y
+
+		# Only snap if horizontally overlapping
+		my_left, my_right = x, x + self.win_w
+		if my_right < tl or my_left > tr:
+			return x, y
+
+		# Snap GlyphKit bottom → target top (sit above)
+		if abs(my_bottom - tt) < threshold:
+			y = tt - self.win_h
+		# Snap GlyphKit top → target bottom (sit below)
+		elif abs(my_top - tb) < threshold:
+			y = tb
+		# Snap GlyphKit top → target top (align tops)
+		elif abs(my_top - tt) < threshold:
+			y = tt
+		# Snap GlyphKit bottom → target bottom (align bottoms)
+		elif abs(my_bottom - tb) < threshold:
+			y = tb - self.win_h
+
+		return x, y
 
 	def _drag_end(self, event):
 		if self.drag["active"]:
 			self.drag["active"] = False
 			self.titlebar.configure(cursor="")
-			self._snap_if_close()
 
 	def _position_bottom(self):
 		"""Position window at bottom-center of the screen."""
@@ -1258,13 +1480,327 @@ class GlyphKitApp:
 		y = bottom - self.win_h
 		self.root.geometry(f"{self.win_w}x{self.win_h}+{x}+{y}")
 
-	def _snap_if_close(self):
-		"""Snap to bottom screen edge if the window is close enough."""
-		_, _, _, work_bottom = get_work_area()
-		win_bottom = self.root.winfo_y() + self.win_h
-		if abs(win_bottom - work_bottom) < SNAP_DIST:
-			y = work_bottom - self.win_h
-			self.root.geometry(f"{self.win_w}x{self.win_h}+{self.root.winfo_x()}+{y}")
+	# === Settings Flyout ===
+
+	def _toggle_settings(self):
+		if self._settings_win and self._settings_win.winfo_exists():
+			self._close_settings()
+		else:
+			self._open_settings()
+
+	def _open_settings(self):
+		fw = self.win_w // 2
+		fh = self.win_h
+		main_x = self.root.winfo_x()
+		main_y = self.root.winfo_y()
+
+		# Position above main window, right-aligned
+		fx = main_x + self.win_w - fw
+		fy = main_y - fh
+
+		# If not enough space above, open below
+		_, work_top, _, _ = get_work_area()
+		if fy < work_top:
+			fy = main_y + self.win_h
+
+		win = tk.Toplevel(self.root)
+		win.overrideredirect(True)
+		win.attributes("-topmost", True)
+		win.geometry(f"{fw}x{fh}+{fx}+{fy}")
+		win.configure(bg=C["surface"])
+
+		self._settings_win = win
+		self._settings_dirty = False
+
+		# Gear highlight
+		self.titlebar.itemconfig("gear", fill=C["teal"])
+
+		# Build settings UI
+		self._build_settings_ui(win, fw, fh)
+
+		# Apply WS_EX_NOACTIVATE after mapping
+		win.after(50, lambda: set_no_activate(win))
+
+		# Close on Escape
+		win.bind("<Escape>", lambda e: self._close_settings())
+
+	def _close_settings(self):
+		if self._settings_win and self._settings_win.winfo_exists():
+			self._settings_win.destroy()
+		self._settings_win = None
+		if hasattr(self, "titlebar"):
+			self.titlebar.itemconfig("gear", fill=C["text_dim"])
+
+	def _build_settings_ui(self, win, fw, fh):
+		"""Build the settings flyout content."""
+		s = self._scale
+		pad = round(12 * s)
+		font_label = ("Segoe UI", self._font_ui, "bold")
+		font_value = ("Segoe UI", self._font_ui)
+		font_small = ("Segoe UI", max(7, self._font_ui - 1))
+
+		# --- Separator line at bottom (between flyout and main window) ---
+		tk.Frame(win, height=2, bg=C["teal_dim"]).pack(side="bottom", fill="x")
+
+		# --- Title ---
+		title_frame = tk.Frame(win, bg=C["surface"])
+		title_frame.pack(fill="x", padx=pad, pady=(pad, round(6 * s)))
+		tk.Label(
+			title_frame, text="⚙ Settings",
+			bg=C["surface"], fg=C["teal"], font=("Segoe UI", self._font_title, "bold"),
+		).pack(anchor="w")
+
+		# --- Scrollable content ---
+		content = tk.Frame(win, bg=C["surface"])
+		content.pack(fill="both", expand=True, padx=pad)
+
+		# --- Scale ---
+		self._build_setting_slider(
+			content, "Scale", SCALE_STEPS,
+			["80%", "90%", "100%", "110%", "125%"],
+			SCALE_STEPS.index(self._user_scale) if self._user_scale in SCALE_STEPS else 2,
+			"_pending_scale", font_label, font_value, font_small,
+			hover="Adjust overall UI size (auto-scaled for your display)",
+		)
+
+		# --- Idle Opacity ---
+		opacity_keys = list(OPACITY_PRESETS.keys())
+		opacity_labels = ["Off", "High", "Mid", "Low"]
+		current_oi = opacity_keys.index(self._opacity_key) if self._opacity_key in opacity_keys else 2
+		self._build_setting_slider(
+			content, "Idle Opacity", opacity_keys, opacity_labels,
+			current_oi, "_pending_opacity", font_label, font_value, font_small,
+			hover="Transparency when mouse leaves the window",
+		)
+
+		# --- Fade Delay ---
+		delay_steps = list(range(50, 3050, 50))  # 50ms to 3000ms
+		current_delay = self._config.get("fade_delay", 50)
+		delay_idx = min(len(delay_steps) - 1, max(0, (current_delay - 50) // 50))
+		self._build_setting_slider(
+			content, "Fade Delay", delay_steps,
+			["Fast"] + [""] * (len(delay_steps) - 2) + ["Slow"],
+			delay_idx, "_pending_fade_delay", font_label, font_value, font_small,
+			hover="Time before window fades after mouse leaves",
+		)
+
+		# --- Glyph Size ---
+		self._build_setting_buttons(
+			content, "Glyph Size", ["S", "M", "L"],
+			self._glyph_key, "_pending_glyph", font_label, font_value,
+			hover="Character size in the grid (S=small, M=default, L=large)",
+		)
+
+		# --- Window Snapping ---
+		self._build_setting_toggle(
+			content, "Window Snapping", self._snap_enabled,
+			"_pending_snap", font_label, font_value,
+			hover="Snap to edges of other windows while dragging",
+		)
+
+		# --- Apply Button (bottom-right, hidden until dirty) ---
+		self._apply_frame = tk.Frame(win, bg=C["surface"])
+		self._apply_frame.pack(fill="x", padx=pad, pady=(round(4 * s), pad))
+		self._apply_btn = tk.Label(
+			self._apply_frame, text="  Apply  ",
+			bg=C["teal_dark"], fg=C["teal_dim"],
+			font=font_label, cursor="hand2",
+		)
+		# Hidden until a change is made
+		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings())
+		self._apply_btn.bind("<Enter>", lambda e: self._apply_btn.configure(
+			bg=C["teal_dim"], fg=C["bg"],
+		))
+		self._apply_btn.bind("<Leave>", lambda e: self._apply_btn.configure(
+			bg=C["teal_dark"], fg=C["teal_dim"],
+		))
+
+	def _build_setting_slider(self, parent, label, values, labels, current_idx, attr, font_l, font_v, font_s, hover=""):
+		"""Build a discrete slider setting."""
+		s = self._scale
+		frame = tk.Frame(parent, bg=C["surface"])
+		frame.pack(fill="x", pady=(0, round(10 * s)))
+
+		lbl = tk.Label(frame, text=label, bg=C["surface"], fg=C["text"], font=font_l)
+		lbl.pack(anchor="w")
+		if hover:
+			lbl.bind("<Enter>", lambda e: self._set_status(hover))
+			lbl.bind("<Leave>", lambda e: self._set_status(self.status_default))
+
+		slider_frame = tk.Frame(frame, bg=C["surface"])
+		slider_frame.pack(fill="x", pady=(round(4 * s), 0))
+
+		n = len(values)
+		setattr(self, attr, values[current_idx])
+
+		# Track bar
+		track = tk.Canvas(slider_frame, height=round(24 * s), bg=C["surface"], highlightthickness=0, bd=0)
+		track.pack(fill="x")
+
+		def _draw_slider():
+			track.delete("all")
+			tw = track.winfo_width()
+			if tw < 10:
+				track.after(50, _draw_slider)
+				return
+			th = track.winfo_height()
+			cy = th // 2
+			margin = round(10 * s)
+			usable = tw - 2 * margin
+
+			# Draw track line
+			track.create_line(margin, cy, tw - margin, cy, fill=C["border"], width=2)
+
+			# Draw tick marks and labels
+			for i in range(n):
+				x = margin + (usable * i // max(1, n - 1)) if n > 1 else margin
+				track.create_line(x, cy - round(4 * s), x, cy + round(4 * s), fill=C["border"], width=1)
+
+			# Draw active position
+			idx = values.index(getattr(self, attr)) if getattr(self, attr) in values else 0
+			ax = margin + (usable * idx // max(1, n - 1)) if n > 1 else margin
+			r = round(6 * s)
+			track.create_oval(ax - r, cy - r, ax + r, cy + r, fill=C["teal"], outline=C["teal_dim"])
+
+			# Labels at ends
+			if labels:
+				track.create_text(margin, cy + round(12 * s), text=labels[0],
+					fill=C["text_dim"], font=font_s, anchor="n")
+				track.create_text(tw - margin, cy + round(12 * s), text=labels[-1],
+					fill=C["text_dim"], font=font_s, anchor="n")
+
+		def _on_click(event):
+			tw = track.winfo_width()
+			margin = round(10 * s)
+			usable = tw - 2 * margin
+			if usable <= 0:
+				return
+			ratio = max(0, min(1, (event.x - margin) / usable))
+			idx = round(ratio * (n - 1))
+			setattr(self, attr, values[idx])
+			self._mark_settings_dirty()
+			_draw_slider()
+
+		track.bind("<Button-1>", _on_click)
+		track.bind("<B1-Motion>", _on_click)
+		track.bind("<Configure>", lambda e: _draw_slider())
+
+	def _build_setting_buttons(self, parent, label, options, current, attr, font_l, font_v, hover=""):
+		"""Build a button-group setting (e.g., S/M/L)."""
+		s = self._scale
+		frame = tk.Frame(parent, bg=C["surface"])
+		frame.pack(fill="x", pady=(0, round(10 * s)))
+
+		lbl = tk.Label(frame, text=label, bg=C["surface"], fg=C["text"], font=font_l)
+		lbl.pack(anchor="w")
+		if hover:
+			lbl.bind("<Enter>", lambda e: self._set_status(hover))
+			lbl.bind("<Leave>", lambda e: self._set_status(self.status_default))
+
+		btn_frame = tk.Frame(frame, bg=C["surface"])
+		btn_frame.pack(anchor="w", pady=(round(4 * s), 0))
+
+		setattr(self, attr, current)
+		btns = []
+
+		def _select(opt):
+			setattr(self, attr, opt)
+			self._mark_settings_dirty()
+			for b, o in btns:
+				if o == opt:
+					b.configure(bg=C["teal_dark"], fg=C["teal"])
+				else:
+					b.configure(bg=C["btn"], fg=C["text_dim"])
+
+		for opt in options:
+			b = tk.Label(
+				btn_frame, text=f"  {opt}  ",
+				bg=C["teal_dark"] if opt == current else C["btn"],
+				fg=C["teal"] if opt == current else C["text_dim"],
+				font=font_v, cursor="hand2",
+			)
+			b.pack(side="left", padx=(0, round(6 * s)))
+			b.bind("<Button-1>", lambda e, o=opt: _select(o))
+			btns.append((b, opt))
+
+	def _build_setting_toggle(self, parent, label, current, attr, font_l, font_v, hover=""):
+		"""Build an on/off toggle switch."""
+		s = self._scale
+		frame = tk.Frame(parent, bg=C["surface"])
+		frame.pack(fill="x", pady=(0, round(10 * s)))
+
+		setattr(self, attr, current)
+
+		row = tk.Frame(frame, bg=C["surface"])
+		row.pack(fill="x")
+		lbl = tk.Label(row, text=label, bg=C["surface"], fg=C["text"], font=font_l)
+		lbl.pack(side="left")
+		if hover:
+			lbl.bind("<Enter>", lambda e: self._set_status(hover))
+			lbl.bind("<Leave>", lambda e: self._set_status(self.status_default))
+
+		tw = round(36 * s)
+		th = round(18 * s)
+		toggle = tk.Canvas(row, width=tw, height=th, bg=C["surface"], highlightthickness=0, bd=0, cursor="hand2")
+		toggle.pack(side="right")
+
+		def _draw():
+			toggle.delete("all")
+			on = getattr(self, attr)
+			bg = C["teal_dim"] if on else C["border"]
+			r = th // 2
+			# Track
+			toggle.create_rectangle(0, 0, tw, th, fill=bg, outline=bg, width=0)
+			# Knob
+			knob_x = tw - r if on else r
+			kr = r - 2
+			toggle.create_oval(knob_x - kr, 2, knob_x + kr, th - 2, fill="#fff" if on else C["text_dim"], outline="")
+
+		def _click(event):
+			setattr(self, attr, not getattr(self, attr))
+			self._mark_settings_dirty()
+			_draw()
+
+		toggle.bind("<Button-1>", _click)
+		_draw()
+
+	def _mark_settings_dirty(self):
+		"""Show the Apply button when settings have been changed."""
+		self._settings_dirty = True
+		if hasattr(self, "_apply_btn"):
+			self._apply_btn.pack(anchor="e")
+
+	def _apply_settings(self):
+		"""Apply changed settings and rebuild the UI."""
+		# Collect pending values
+		if hasattr(self, "_pending_scale"):
+			self._config["user_scale"] = self._pending_scale
+		if hasattr(self, "_pending_opacity"):
+			self._config["idle_opacity"] = self._pending_opacity
+		if hasattr(self, "_pending_fade_delay"):
+			self._config["fade_delay"] = self._pending_fade_delay
+		if hasattr(self, "_pending_glyph"):
+			self._config["glyph_size"] = self._pending_glyph
+		if hasattr(self, "_pending_snap"):
+			self._config["snap_enabled"] = self._pending_snap
+
+		# Save config
+		self._save_config()
+
+		# Show restart message
+		self._show_transient("Applying settings \u2014 restarting\u2026", C["teal"])
+
+		# Close settings and rebuild after a brief pause
+		self.root.after(1200, self._do_rebuild_with_settings)
+
+	def _do_rebuild_with_settings(self):
+		"""Perform the actual rebuild after showing the restart message."""
+		self._close_settings()
+		self._rebuild()
+		# Show confirmation
+		self._show_transient("Restarted \u2014 new settings applied", C["teal"])
+		# Reopen settings flyout
+		self.root.after(200, self._open_settings)
 
 	# === Run ===
 

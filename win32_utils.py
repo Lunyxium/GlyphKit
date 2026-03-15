@@ -31,6 +31,7 @@ VK_G = 0x47
 HOTKEY_ID = 1
 
 user32 = ctypes.windll.user32
+gdi32 = ctypes.windll.gdi32
 
 
 # === Structures (correct alignment for x64) ===
@@ -99,6 +100,33 @@ def enable_dpi_awareness():
 		ctypes.windll.shcore.SetProcessDpiAwareness(1)
 	except Exception:
 		pass
+
+
+def get_system_dpi():
+	"""Get the system DPI. Returns 96 for 100%, 120 for 125%, 144 for 150%, etc."""
+	try:
+		dc = user32.GetDC(None)
+		dpi = gdi32.GetDeviceCaps(dc, 88)  # LOGPIXELSX
+		user32.ReleaseDC(None, dc)
+		return dpi if dpi > 0 else 96
+	except Exception:
+		return 96
+
+
+def get_foreground_window_rect():
+	"""Get the bounding rect and hwnd of the current foreground window.
+
+	Returns (left, top, right, bottom, hwnd) or None on failure.
+	"""
+	try:
+		hwnd = user32.GetForegroundWindow()
+		if not hwnd:
+			return None
+		rect = wintypes.RECT()
+		user32.GetWindowRect(hwnd, ctypes.byref(rect))
+		return rect.left, rect.top, rect.right, rect.bottom, hwnd
+	except Exception:
+		return None
 
 
 def set_no_activate(root):
