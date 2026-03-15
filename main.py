@@ -1539,7 +1539,7 @@ class GlyphKitApp:
 
 	def _open_settings(self):
 		fw = self.win_w // 2
-		fh = self.win_h
+		fh = round(self.win_h * 0.80)
 		main_x = self.root.winfo_x()
 		main_y = self.root.winfo_y()
 
@@ -1556,7 +1556,7 @@ class GlyphKitApp:
 		win = tk.Toplevel(self.root)
 		win.overrideredirect(True)
 		win.attributes("-topmost", True)
-		win.configure(bg=C["bg"])
+		win.configure(bg=C["border"])  # Border color as window bg (horseshoe outline)
 
 		self._settings_win = win
 		self._settings_dirty = False
@@ -1564,8 +1564,13 @@ class GlyphKitApp:
 		# Gear highlight (gold)
 		self.titlebar.itemconfig("gear", fill=C["gold_dim"])
 
-		# Build settings UI
-		self._build_settings_ui(win, fw, fh)
+		# Horseshoe border: 1px on top, left, right — not bottom (connects to main)
+		border_w = 1
+		inner = tk.Frame(win, bg=C["bg"])
+		inner.pack(fill="both", expand=True, padx=border_w, pady=(border_w, 0))
+
+		# Build settings UI inside the inner frame
+		self._build_settings_ui(inner, fw - 2 * border_w, fh)
 
 		# Position the flyout
 		win.geometry(f"{fw}x{fh}+{fx}+{fy_target}")
@@ -1610,8 +1615,27 @@ class GlyphKitApp:
 		box_bg = C["bg"]
 		box_border = C["border"]
 
-		# --- Separator line at bottom (between flyout and main window) ---
-		tk.Frame(win, height=2, bg=C["teal_dim"]).pack(side="bottom", fill="x")
+		# --- Bottom bar: separator + Apply button ---
+		bottom = tk.Frame(win, bg=C["bg"])
+		bottom.pack(side="bottom", fill="x")
+		tk.Frame(bottom, height=2, bg=C["teal_dim"]).pack(fill="x", side="bottom")
+
+		self._apply_frame = tk.Frame(bottom, bg=C["bg"])
+		self._apply_frame.pack(fill="x", padx=pad, pady=round(4 * s))
+
+		apply_border = tk.Frame(self._apply_frame, bg=C["border"])
+		apply_border.pack(anchor="e")
+		self._apply_border = apply_border
+
+		self._apply_btn = tk.Label(
+			apply_border, text="  Apply  ",
+			bg=C["btn"], fg="#555555",
+			font=font_label, padx=round(8 * s), pady=round(2 * s),
+		)
+		self._apply_btn.pack(padx=1, pady=1)
+		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
+		self._apply_btn.bind("<Enter>", lambda e: self._apply_hover_in())
+		self._apply_btn.bind("<Leave>", lambda e: self._apply_hover_out())
 
 		# --- Titlebar (same style as main window) ---
 		th = self._titlebar_h
@@ -1714,23 +1738,7 @@ class GlyphKitApp:
 			), hover="Snap to nearby window edges",
 		)
 
-		# --- Apply Button (always visible, greyed out until dirty) ---
-		self._apply_frame = tk.Frame(right_col, bg=C["bg"])
-		self._apply_frame.pack(fill="x", pady=(round(6 * s), 0))
-
-		apply_border = tk.Frame(self._apply_frame, bg=C["border"])
-		apply_border.pack(anchor="e")
-		self._apply_border = apply_border
-
-		self._apply_btn = tk.Label(
-			apply_border, text="  Apply  ",
-			bg=C["btn"], fg="#555555",
-			font=font_label, padx=round(8 * s), pady=round(3 * s),
-		)
-		self._apply_btn.pack(padx=1, pady=1)
-		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
-		self._apply_btn.bind("<Enter>", lambda e: self._apply_hover_in())
-		self._apply_btn.bind("<Leave>", lambda e: self._apply_hover_out())
+		# (Apply button is in the bottom bar, built above)
 
 	def _build_setting_box(self, parent, title, bg, border_color, font_title, build_fn, hover=""):
 		"""Build a bordered settings box with title and content."""
@@ -1769,7 +1777,7 @@ class GlyphKitApp:
 		row.pack(fill="x")
 
 		# Fixed-width label containers so all sliders track the same width
-		label_w = round(34 * s)
+		label_w = round(28 * s)
 
 		lf = tk.Frame(row, bg=C["bg"], width=label_w, height=round(18 * s))
 		lf.pack(side="left")
