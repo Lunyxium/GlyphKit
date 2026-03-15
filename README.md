@@ -27,21 +27,16 @@
 
 ## Why
 
-You're writing a formula and need `∑`, or `∂`?
-A proof that calls for `∀x ∈ ℝ` or `α → β`.
-A doc where `½` looks better than `1/2`, or `≥` beats `>=`, or `→` replaces `-->`?
-You want `≈` not `~=`. You need `Δ`, `λ`, `π`, `θ`  – all that without switching keyboard layouts or googling "greek letter phi unicode" ?
+Writing a formula that needs `∑` or `∂`? A doc where `½` looks cleaner than `1/2`, or `→` beats `-->`?  
+Greek letters for a proof, `≈` instead of `~=`, currency symbols, arrows, fractions?
 
-So you open the Windows character map.
-Lose focus. Scroll. Squint. Click. Copy...
-...Alt-tab back. Paste. Repeat. For. Every. Single. Glyph.
+You know the drill: open the Windows character map. Lose focus. Scroll. Squint. Click. Copy. Alt-tab back. Paste. Repeat. For every single glyph.
 
-Windows has a floating touch keyboard with some symbols. Surely that works?
-It does, for emoji. But try finding `∑` or `∀` or `⊕` in there. The symbol coverage is thin, the layout is cluttered, and it still steals focus when you tap it. It was built for touchscreens and emoji, not for quick access to actual Unicode symbols in your workflow.
+Or you google it. Three tabs later you're reading the Wikipedia article on the Greek alphabet.
 
-*GlyphKit exists because that gap shouldn't be there.*
-It floats on your screen, never steals your cursor, and puts every symbol just one click away.
-And in AUTO mode it even pastes for you – click `∞` and it's already in your text field, right on top of your cursor where you need it.
+The floating touch keyboard and other tools exists, sure. Great for emoji. Finding `∑` or `⊕`? Thin coverage, cluttered layout, scrolling for days, it still steals focus or closes every time. Built for touchscreens, not your workflow.
+
+*GlyphKit exists because that gap shouldn't be there.* It floats, never steals your cursor, puts every symbol one click away. In AUTO mode it even pastes for you – click `∞` and it lands right in your text field – while the tool stays available to you on top of your window for as long as you need it.
 
 ## Features
 
@@ -107,8 +102,11 @@ Window position, copy mode, favorites, and recents all survive restarts. Config 
 ### Portable (recommended)
 
 1. Download **GlyphKit.exe** from the [latest release](https://github.com/Lunyxium/glyphkit/releases/latest)
-2. Put it anywhere you like
+2. Put it anywhere you like  
+   *(note: if you put it in a read-only folder like C:\Program Files\ it won't save your settings or history)*
 3. Run it
+
+Windows might prompt a security pop-up, code & everything is right here if you want to check before allowing it.
 
 Single file. No installer. No Python required. No admin rights. Just works.
 
