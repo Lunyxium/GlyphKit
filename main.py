@@ -276,7 +276,7 @@ class GlyphKitApp:
 
 	def _load_config(self):
 		try:
-			with open(CONFIG_PATH, "r") as f:
+			with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 				self._config = json.load(f)
 		except (FileNotFoundError, json.JSONDecodeError):
 			self._config = {}
@@ -297,40 +297,34 @@ class GlyphKitApp:
 			"x": self.root.winfo_x(),
 			"y": self.root.winfo_y(),
 			"copy_mode": self._copy_mode,
-			"favorites": self._favorites,
-			"recents": self._recents,
+			"favorites": list(self._favorites),
+			"recents": list(self._recents),
 			"user_scale": self._user_scale,
 			"glyph_size": self._glyph_key,
 			"idle_opacity": self._opacity_key,
 			"fade_delay": self._config.get("fade_delay", 50),
 			"snap_enabled": self._snap_enabled,
 		})
-		# Ensure hotkey default exists
 		self._config.setdefault("hotkey", "ctrl+alt+g")
 		try:
 			os.makedirs(_CONFIG_DIR, exist_ok=True)
-			with open(CONFIG_PATH, "w") as f:
+			with open(CONFIG_PATH, "w", encoding="utf-8") as f:
 				json.dump(self._config, f, indent=2, ensure_ascii=False)
 		except Exception:
 			pass
 
 	def _quit(self):
 		try:
-			# Cancel debounce and save immediately
 			if hasattr(self, "_save_timer") and self._save_timer:
 				self.root.after_cancel(self._save_timer)
 			self._save_config()
 		except Exception:
 			pass
 		try:
-			stop_hotkey_listener()
+			self.root.destroy()
 		except Exception:
 			pass
-		try:
-			self.root.quit()
-		except Exception:
-			pass
-		sys.exit(0)
+		os._exit(0)
 
 	# === Build UI ===
 
