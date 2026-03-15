@@ -11,6 +11,7 @@ import sys
 import tkinter as tk
 import tkinter.font as tkFont
 from characters import CATEGORIES
+import ctypes
 from win32_utils import (
 	enable_dpi_awareness, set_no_activate, send_paste,
 	get_work_area, force_foreground, get_system_dpi, get_foreground_window_rect,
@@ -255,7 +256,7 @@ class GlyphKitApp:
 		self._setup_opacity()
 		self._hwnd = set_no_activate(self.root)
 		self._setup_hotkey()
-		self.root.bind_all("<Escape>", self._on_escape)
+		# ESC handled via _poll_escape, not tkinter bindings
 
 	@staticmethod
 	def _build_char_order():
@@ -301,9 +302,10 @@ class GlyphKitApp:
 		# Ensure hotkey default exists
 		self._config.setdefault("hotkey", "ctrl+alt+g")
 		try:
+			os.makedirs(_CONFIG_DIR, exist_ok=True)
 			with open(CONFIG_PATH, "w") as f:
 				json.dump(self._config, f, indent=2, ensure_ascii=False)
-		except OSError:
+		except Exception:
 			pass
 
 	def _quit(self):
@@ -376,7 +378,7 @@ class GlyphKitApp:
 		# Reapply opacity, window styles, and bindings
 		self._setup_opacity()
 		self._hwnd = set_no_activate(self.root)
-		self.root.bind_all("<Escape>", self._on_escape)
+		# ESC handled via _poll_escape, not tkinter bindings
 
 	def _lock_layout(self):
 		"""Lock grid height and set explicit window geometry."""
@@ -1152,8 +1154,8 @@ class GlyphKitApp:
 
 		self.char_frame.bind("<Configure>", self._on_grid_frame_configure)
 		self._grid_canvas.bind("<Configure>", self._on_grid_canvas_configure)
-		self._grid_canvas.bind("<Enter>", lambda e: self._bind_mousewheel())
-		self._grid_canvas.bind("<Leave>", lambda e: self._unbind_mousewheel())
+		# Mousewheel: bind directly on canvas (never use bind_all/unbind_all)
+		self._grid_canvas.bind("<MouseWheel>", self._on_mousewheel)
 
 	def _on_grid_frame_configure(self, _event=None):
 		self._grid_canvas.configure(scrollregion=self._grid_canvas.bbox("all"))
@@ -1180,12 +1182,6 @@ class GlyphKitApp:
 				font=("Segoe UI", max(6, round(7 * self._scale))),
 				tags="scroll_ind",
 			)
-
-	def _bind_mousewheel(self):
-		self._grid_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-
-	def _unbind_mousewheel(self):
-		self._grid_canvas.unbind_all("<MouseWheel>")
 
 	def _on_mousewheel(self, event):
 		self._grid_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -1423,29 +1419,31 @@ class GlyphKitApp:
 			step_ms, lambda: self._fade_step(new_alpha, target, total_ms - step_ms, step_ms)
 		)
 
-	# === Escape to Close ===
-
-	def _on_escape(self, event=None):
-		"""Close the window on Escape.
-
-		No focus check needed — with WS_EX_NOACTIVATE, the Escape event
-		only reaches us if tkinter has internal focus, which means the
-		user is interacting with this window.
-		"""
-		self._quit()
-
-	# === Global Hotkey ===
+	# === Global Hotkey + Escape Polling ===
 
 	def _setup_hotkey(self):
 		"""Start global hotkey listener thread and begin polling."""
 		start_hotkey_listener()
-		self._poll_hotkey()
+		self._poll_keys()
 
-	def _poll_hotkey(self):
-		"""Poll for global hotkey press from the listener thread."""
+	def _poll_keys(self):
+		"""Poll for global hotkey and Escape key."""
 		if check_hotkey_pressed():
 			self._toggle_visibility()
-		self.root.after(100, self._poll_hotkey)
+
+		# Poll Escape via Win32 — immune to tkinter focus/binding issues
+		VK_ESCAPE = 0x1B
+		if ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x0001:
+			# Only close if mouse is over our window
+			try:
+				mx = self.root.winfo_pointerx() - self.root.winfo_rootx()
+				my = self.root.winfo_pointery() - self.root.winfo_rooty()
+				if 0 <= mx <= self.win_w and 0 <= my <= self.win_h:
+					self._quit()
+			except Exception:
+				pass
+
+		self.root.after(100, self._poll_keys)
 
 	def _toggle_visibility(self):
 		"""Show or hide the window via global hotkey."""
