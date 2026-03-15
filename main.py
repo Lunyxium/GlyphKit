@@ -423,9 +423,9 @@ class GlyphKitApp:
 		bar.tag_bind("close", "<Enter>", lambda e: bar.itemconfig("close", fill="#ff6b6b"))
 		bar.tag_bind("close", "<Leave>", lambda e: bar.itemconfig("close", fill=C["text_dim"]))
 
-		# --- Settings gear (gold highlight, clear icon) ---
-		gear_font_size = max(9, round(self._font_ui * 1.15))
-		gx = cx - round(44 * self._scale)
+		# --- Settings gear (gold highlight, prominent) ---
+		gear_font_size = max(10, round(self._font_ui * 1.35))
+		gx = cx - round(48 * self._scale)
 		self._gear_id = bar.create_text(
 			gx, h // 2, text="\u2699",
 			fill=C["text_dim"], font=("Segoe UI Symbol", gear_font_size, "bold"),
@@ -436,7 +436,7 @@ class GlyphKitApp:
 		bar.tag_bind("gear", "<Leave>", lambda e: self._gear_hover_out())
 
 		# --- Copy mode toggle (cycles through 4 modes) ---
-		ax = gx - round(52 * self._scale)
+		ax = gx - round(60 * self._scale)
 		mode = COPY_MODES[self._copy_mode]
 		self._mode_id = bar.create_text(
 			ax, h // 2, text=mode["label"],
@@ -1567,42 +1567,14 @@ class GlyphKitApp:
 		# Build settings UI
 		self._build_settings_ui(win, fw, fh)
 
-		# Animate: slide out from main window edge
-		self._flyout_animate(win, fx, fy_target, fw, fh, opens_above)
+		# Position the flyout
+		win.geometry(f"{fw}x{fh}+{fx}+{fy_target}")
 
 		# Apply WS_EX_NOACTIVATE after mapping
 		win.after(50, lambda: set_no_activate(win))
 
 		# Close on Escape
 		win.bind("<Escape>", lambda e: self._close_settings())
-
-	def _flyout_animate(self, win, fx, fy_target, fw, fh, opens_above):
-		"""Animate the settings flyout sliding out from the main window edge."""
-		steps = 8
-		step_ms = 15
-		main_y = self.root.winfo_y()
-		main_bottom = main_y + self.win_h
-
-		for i in range(steps + 1):
-			progress = i / steps
-			# Ease-out curve
-			t = 1 - (1 - progress) ** 2
-			current_h = max(1, round(fh * t))
-
-			if opens_above:
-				# Slide upward: bottom edge stays at main_y, top grows up
-				cy = main_y - current_h
-			else:
-				# Slide downward: top edge stays at main_bottom, bottom grows down
-				cy = main_bottom
-
-			win.geometry(f"{fw}x{current_h}+{fx}+{cy}")
-			win.update()
-			if i < steps:
-				win.after(step_ms)
-
-		# Ensure final position is exact
-		win.geometry(f"{fw}x{fh}+{fx}+{fy_target}")
 
 	def _close_settings(self):
 		if self._settings_win and self._settings_win.winfo_exists():
@@ -1767,16 +1739,28 @@ class GlyphKitApp:
 		build_fn(content)
 
 	def _build_setting_slider(self, parent, values, labels, current_idx, attr, font_v, font_s):
-		"""Build a discrete slider with grab handle and min/max labels."""
+		"""Build a discrete slider with inline min/max labels."""
 		s = self._scale
 		n = len(values)
 		setattr(self, attr, values[current_idx])
 
-		# Height: knob area (top half) + label area (bottom)
-		knob_cy = round(12 * s)
-		track_h = round(38 * s)
-		track = tk.Canvas(parent, height=track_h, bg=C["bg"], highlightthickness=0, bd=0, cursor="hand2")
-		track.pack(fill="x")
+		# Layout: [min_label] [track] [max_label]
+		row = tk.Frame(parent, bg=C["bg"])
+		row.pack(fill="x")
+
+		min_text = labels[0] if labels and labels[0] else ""
+		max_text = labels[-1] if labels and labels[-1] else ""
+
+		if min_text:
+			tk.Label(row, text=min_text, bg=C["bg"], fg=C["text_dim"],
+				font=font_s).pack(side="left", padx=(0, round(4 * s)))
+		if max_text:
+			tk.Label(row, text=max_text, bg=C["bg"], fg=C["text_dim"],
+				font=font_s).pack(side="right", padx=(round(4 * s), 0))
+
+		track_h = round(22 * s)
+		track = tk.Canvas(row, height=track_h, bg=C["bg"], highlightthickness=0, bd=0, cursor="hand2")
+		track.pack(fill="x", expand=True)
 
 		def _draw_slider():
 			track.delete("all")
@@ -1784,8 +1768,8 @@ class GlyphKitApp:
 			if tw < 10:
 				track.after(50, _draw_slider)
 				return
-			cy = knob_cy
-			margin = round(12 * s)
+			cy = track_h // 2
+			margin = round(8 * s)
 			usable = tw - 2 * margin
 
 			# Track line
@@ -1795,7 +1779,7 @@ class GlyphKitApp:
 			if n <= 10:
 				for i in range(n):
 					x = margin + (usable * i // max(1, n - 1)) if n > 1 else margin
-					tick_h = round(4 * s)
+					tick_h = round(3 * s)
 					track.create_line(x, cy - tick_h, x, cy + tick_h, fill=C["border"], width=1)
 
 			# Active knob
@@ -1807,19 +1791,9 @@ class GlyphKitApp:
 				fill=C["teal"], outline=C["teal_mid"], width=round(2 * s),
 			)
 
-			# Min/max labels below track
-			if labels:
-				ly = cy + round(14 * s)
-				if labels[0]:
-					track.create_text(margin, ly, text=labels[0],
-						fill=C["text_dim"], font=font_s, anchor="n")
-				if labels[-1]:
-					track.create_text(tw - margin, ly, text=labels[-1],
-						fill=C["text_dim"], font=font_s, anchor="n")
-
 		def _on_click(event):
 			tw = track.winfo_width()
-			margin = round(14 * s)
+			margin = round(8 * s)
 			usable = tw - 2 * margin
 			if usable <= 0:
 				return
