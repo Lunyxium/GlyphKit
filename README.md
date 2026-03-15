@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/Lunyxium/glyphkit/releases/latest"><img src="https://img.shields.io/github/v/release/Lunyxium/glyphkit?style=flat-square&color=2dd4bf" alt="Release"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2011-0078D4?style=flat-square" alt="Windows 11">
-  <img src="https://img.shields.io/github/license/Lunyxium/glyphkit?style=flat-square" alt="License">
+  <img src="https://img.shields.io/github/license/Lunyxium/glyphkit?style=flat-square&_t=1" alt="License"> 
   <img src="https://img.shields.io/badge/dependencies-zero-2dd4bf?style=flat-square" alt="Zero dependencies">
 </p>
 
