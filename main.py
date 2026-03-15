@@ -859,7 +859,7 @@ class GlyphKitApp:
 			self._del_btn_frame.destroy()
 
 		self._del_btn_frame = tk.Frame(self.grid_container, bg=C["bg"])
-		self._del_btn_frame.pack(side="bottom", anchor="e", padx=6, pady=(0, 2))
+		self._del_btn_frame.pack(anchor="e", padx=6, pady=(0, 2))
 
 		if self._delete_mode:
 			text = "\u2715  done"
@@ -1013,7 +1013,7 @@ class GlyphKitApp:
 			self._clear_btn_frame.destroy()
 
 		self._clear_btn_frame = tk.Frame(self.grid_container, bg=C["bg"])
-		self._clear_btn_frame.pack(side="bottom", anchor="e", padx=6, pady=(0, 2))
+		self._clear_btn_frame.pack(anchor="e", padx=6, pady=(0, 2))
 
 		if not self._recents:
 			return
@@ -1147,57 +1147,10 @@ class GlyphKitApp:
 	def _build_grid(self):
 		self.grid_container = tk.Frame(self.root, bg=C["bg"], padx=self._pad)
 		self.grid_container.pack(fill="both", expand=True, pady=round(4 * self._scale))
-
-		self._grid_canvas = tk.Canvas(
-			self.grid_container, bg=C["bg"], highlightthickness=0, bd=0,
-		)
-		self._grid_canvas.pack(fill="both", expand=True)
-
-		self.char_frame = tk.Frame(self._grid_canvas, bg=C["bg"])
-		self._grid_canvas_win = self._grid_canvas.create_window(
-			(0, 0), window=self.char_frame, anchor="nw",
-		)
-
-		self.char_frame.bind("<Configure>", self._on_grid_frame_configure)
-		self._grid_canvas.bind("<Configure>", self._on_grid_canvas_configure)
-		# Mousewheel: bind directly on canvas (never use bind_all/unbind_all)
-		self._grid_canvas.bind("<MouseWheel>", self._on_mousewheel)
-
-	def _on_grid_frame_configure(self, _event=None):
-		self._grid_canvas.configure(scrollregion=self._grid_canvas.bbox("all"))
-		self._update_scroll_indicator()
-
-	def _on_grid_canvas_configure(self, event):
-		self._grid_canvas.itemconfig(self._grid_canvas_win, width=event.width)
-		self._update_scroll_indicator()
-
-	def _update_scroll_indicator(self):
-		"""Show a subtle scroll indicator if content overflows."""
-		self._grid_canvas.delete("scroll_ind")
-		bbox = self._grid_canvas.bbox("all")
-		if not bbox:
-			return
-		content_h = bbox[3] - bbox[1]
-		canvas_h = self._grid_canvas.winfo_height()
-		if content_h > canvas_h + 2:
-			# Small down-arrow indicator at bottom-right
-			x = self._grid_canvas.winfo_width() - round(12 * self._scale)
-			y = canvas_h - round(6 * self._scale)
-			self._grid_canvas.create_text(
-				x, y, text="\u25bc", fill=C["text_dim"],
-				font=("Segoe UI", max(6, round(7 * self._scale))),
-				tags="scroll_ind",
-			)
-
-	def _on_mousewheel(self, event):
-		self._grid_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-		self._update_scroll_indicator()
+		self.char_frame = tk.Frame(self.grid_container, bg=C["bg"])
+		self.char_frame.pack(fill="x", anchor="n")
 
 	def _fill_grid(self, chars):
-		# Hide frame during population to prevent loading flicker
-		self.char_frame.pack_propagate(False) if self.char_frame.winfo_manager() == "pack" else None
-		self._grid_canvas.itemconfig(self._grid_canvas_win, state="hidden")
-
 		for w in self.char_frame.winfo_children():
 			w.destroy()
 
@@ -1218,10 +1171,6 @@ class GlyphKitApp:
 
 		for col in range(self._columns):
 			self.char_frame.columnconfigure(col, weight=1, minsize=self._btn_size)
-
-		# Show frame after population
-		self._grid_canvas.itemconfig(self._grid_canvas_win, state="normal")
-		self._grid_canvas.yview_moveto(0)
 
 	# --- Status Bar ---
 
