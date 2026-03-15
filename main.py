@@ -342,7 +342,9 @@ class GlyphKitApp:
 		self.tabs = {}
 
 		# Recompute and rebuild
+		self._load_config()
 		self._compute_layout()
+		self.status_default = self._default_status_text()
 		self._build()
 
 		# Restore position
@@ -356,9 +358,10 @@ class GlyphKitApp:
 		elif cat in CATEGORIES:
 			self._show_cat(cat)
 
-		# Reapply opacity and window styles
-		self.root.attributes("-alpha", self._idle_opacity)
-		self.root.after(10, lambda: set_no_activate(self.root))
+		# Reapply opacity, window styles, and bindings
+		self._setup_opacity()
+		self._hwnd = set_no_activate(self.root)
+		self.root.bind("<Escape>", self._on_escape)
 
 	def _lock_layout(self):
 		"""Lock grid height and set explicit window geometry."""
@@ -1861,35 +1864,36 @@ class GlyphKitApp:
 
 	def _apply_settings(self):
 		"""Apply changed settings and rebuild the UI."""
-		# Collect pending values
-		if hasattr(self, "_pending_scale"):
-			self._config["user_scale"] = self._pending_scale
-		if hasattr(self, "_pending_opacity"):
-			self._config["idle_opacity"] = self._pending_opacity
-		if hasattr(self, "_pending_fade_delay"):
-			self._config["fade_delay"] = self._pending_fade_delay
-		if hasattr(self, "_pending_glyph"):
-			self._config["glyph_size"] = self._pending_glyph
-		if hasattr(self, "_pending_snap"):
-			self._config["snap_enabled"] = self._pending_snap
+		try:
+			# Collect pending values
+			if hasattr(self, "_pending_scale"):
+				self._config["user_scale"] = self._pending_scale
+			if hasattr(self, "_pending_opacity"):
+				self._config["idle_opacity"] = self._pending_opacity
+			if hasattr(self, "_pending_fade_delay"):
+				self._config["fade_delay"] = self._pending_fade_delay
+			if hasattr(self, "_pending_glyph"):
+				self._config["glyph_size"] = self._pending_glyph
+			if hasattr(self, "_pending_snap"):
+				self._config["snap_enabled"] = self._pending_snap
 
-		# Save config
-		self._save_config()
+			# Save config first
+			self._save_config()
 
-		# Show restart message
-		self._show_transient("Applying settings \u2014 restarting\u2026", C["teal"])
+			# Show restart message briefly, then rebuild
+			self._set_status("Applying settings\u2026", C["teal"])
+			self.root.update()
 
-		# Close settings and rebuild after a brief pause
-		self.root.after(1200, self._do_rebuild_with_settings)
-
-	def _do_rebuild_with_settings(self):
-		"""Perform the actual rebuild after showing the restart message."""
-		self._close_settings()
-		self._rebuild()
-		# Show confirmation
-		self._show_transient("Restarted \u2014 new settings applied", C["teal"])
-		# Reopen settings flyout
-		self.root.after(200, self._open_settings)
+			# Close settings, rebuild, reopen
+			self._close_settings()
+			self._rebuild()
+			self._show_transient("Settings applied", C["teal"])
+			self.root.after(200, self._open_settings)
+		except Exception as e:
+			# Surface the error so it's not silently swallowed
+			print(f"Settings apply error: {e}")
+			import traceback
+			traceback.print_exc()
 
 	# === Run ===
 
