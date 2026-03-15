@@ -307,9 +307,19 @@ class GlyphKitApp:
 			pass
 
 	def _quit(self):
-		self._save_config()
-		stop_hotkey_listener()
-		self.root.quit()
+		try:
+			self._save_config()
+		except Exception:
+			pass
+		try:
+			stop_hotkey_listener()
+		except Exception:
+			pass
+		try:
+			self.root.quit()
+		except Exception:
+			pass
+		sys.exit(0)
 
 	# === Build UI ===
 
@@ -1416,9 +1426,13 @@ class GlyphKitApp:
 	# === Escape to Close ===
 
 	def _on_escape(self, event=None):
-		"""Close the window on Escape, but only if it has OS keyboard focus."""
-		if self.root.focus_get() is not None:
-			self._quit()
+		"""Close the window on Escape.
+
+		No focus check needed — with WS_EX_NOACTIVATE, the Escape event
+		only reaches us if tkinter has internal focus, which means the
+		user is interacting with this window.
+		"""
+		self._quit()
 
 	# === Global Hotkey ===
 
