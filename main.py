@@ -255,7 +255,7 @@ class GlyphKitApp:
 		self._setup_opacity()
 		self._hwnd = set_no_activate(self.root)
 		self._setup_hotkey()
-		self.root.bind("<Escape>", self._on_escape)
+		self.root.bind_all("<Escape>", self._on_escape)
 
 	@staticmethod
 	def _build_char_order():
@@ -376,7 +376,7 @@ class GlyphKitApp:
 		# Reapply opacity, window styles, and bindings
 		self._setup_opacity()
 		self._hwnd = set_no_activate(self.root)
-		self.root.bind("<Escape>", self._on_escape)
+		self.root.bind_all("<Escape>", self._on_escape)
 
 	def _lock_layout(self):
 		"""Lock grid height and set explicit window geometry."""
@@ -1737,23 +1737,28 @@ class GlyphKitApp:
 			), hover="Snap to nearby window edges",
 		)
 
-		# --- Apply Button (bottom of right column) ---
-		self._apply_frame = tk.Frame(right_col, bg=C["bg"])
-		self._apply_frame.pack(side="bottom", anchor="e", pady=(round(4 * s), round(2 * s)))
-
-		apply_border = tk.Frame(self._apply_frame, bg=C["border"])
-		apply_border.pack()
-		self._apply_border = apply_border
-
-		self._apply_btn = tk.Label(
-			apply_border, text="  Apply  ",
-			bg=C["btn"], fg="#555555",
-			font=font_label, padx=round(8 * s), pady=round(2 * s),
+		# --- Apply Button (Canvas tag_bind — survives WS_EX_NOACTIVATE focus loss) ---
+		apply_h = round(26 * s)
+		apply_w = round(70 * s)
+		self._apply_canvas = tk.Canvas(
+			right_col, width=apply_w, height=apply_h,
+			bg=C["bg"], highlightthickness=0, bd=0,
 		)
-		self._apply_btn.pack(padx=1, pady=1)
-		self._apply_btn.bind("<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
-		self._apply_btn.bind("<Enter>", lambda e: self._apply_hover_in())
-		self._apply_btn.bind("<Leave>", lambda e: self._apply_hover_out())
+		self._apply_canvas.pack(side="bottom", anchor="e", pady=(round(4 * s), round(4 * s)))
+
+		# Border rect
+		self._apply_canvas.create_rectangle(
+			0, 0, apply_w, apply_h,
+			fill=C["btn"], outline=C["border"], width=1, tags="apply",
+		)
+		# Label text
+		self._apply_canvas.create_text(
+			apply_w // 2, apply_h // 2, text="Apply",
+			fill="#555555", font=font_label, tags="apply",
+		)
+		self._apply_canvas.tag_bind("apply", "<Button-1>", lambda e: self._apply_settings() if self._settings_dirty else None)
+		self._apply_canvas.tag_bind("apply", "<Enter>", lambda e: self._apply_hover_in())
+		self._apply_canvas.tag_bind("apply", "<Leave>", lambda e: self._apply_hover_out())
 
 	def _build_setting_box(self, parent, title, bg, border_color, font_title, build_fn, hover=""):
 		"""Build a bordered settings box with title and content."""
@@ -1920,28 +1925,46 @@ class GlyphKitApp:
 		_draw()
 
 	def _apply_hover_in(self):
+		c = self._apply_canvas
 		if self._settings_dirty:
-			self._apply_btn.configure(bg=C["gold"], fg=C["bg"])
-			self._apply_border.configure(bg=C["gold_dim"])
+			c.itemconfig("apply", fill=C["gold"])
+			# Find the text item and recolor it
+			for item in c.find_withtag("apply"):
+				if c.type(item) == "text":
+					c.itemconfig(item, fill=C["bg"])
+			c.configure(cursor="hand2")
 			self._set_status("Apply changes and restart")
 		else:
 			self._set_status("No changes to apply")
 
 	def _apply_hover_out(self):
+		c = self._apply_canvas
 		if self._settings_dirty:
-			self._apply_btn.configure(bg=C["gold_dark"], fg=C["gold"])
-			self._apply_border.configure(bg=C["gold_dim"])
+			for item in c.find_withtag("apply"):
+				if c.type(item) == "rectangle":
+					c.itemconfig(item, fill=C["gold_dark"], outline=C["gold_dim"])
+				elif c.type(item) == "text":
+					c.itemconfig(item, fill=C["gold"])
 		else:
-			self._apply_btn.configure(bg=C["btn"], fg="#555555")
-			self._apply_border.configure(bg=C["border"])
+			for item in c.find_withtag("apply"):
+				if c.type(item) == "rectangle":
+					c.itemconfig(item, fill=C["btn"], outline=C["border"])
+				elif c.type(item) == "text":
+					c.itemconfig(item, fill="#555555")
+		c.configure(cursor="")
 		self._set_status(self.status_default)
 
 	def _mark_settings_dirty(self):
 		"""Activate the Apply button when settings have been changed."""
 		self._settings_dirty = True
-		if hasattr(self, "_apply_btn"):
-			self._apply_btn.configure(bg=C["gold_dark"], fg=C["gold"], cursor="hand2")
-			self._apply_border.configure(bg=C["gold_dim"])
+		if hasattr(self, "_apply_canvas"):
+			c = self._apply_canvas
+			for item in c.find_withtag("apply"):
+				if c.type(item) == "rectangle":
+					c.itemconfig(item, fill=C["gold_dark"], outline=C["gold_dim"])
+				elif c.type(item) == "text":
+					c.itemconfig(item, fill=C["gold"])
+			c.configure(cursor="hand2")
 
 	def _apply_settings(self):
 		"""Apply changed settings and rebuild the UI."""
