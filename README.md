@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  Part of the <a href="https://github.com/stars/Lunyxium/lists/tools">Lunyxium Tools</a> collection.
+  Part of my <a href="https://github.com/stars/Lunyxium/lists/tools">Tools collection</a>.
 </p>
 
 ---
@@ -63,7 +63,7 @@ Cycle through them in the title bar:
 | **U+**   | Copies the Unicode codepoint, e.g. `U+00BD`                |
 
 <p align="center">
-  <img src="media/glyphkit_modes.png" alt="The four copy modes — COPY, AUTO, HTML, and U+" width="720">
+  <img src="media/glyphkit_modes.png" alt="The four copy modes — COPY, AUTO, HTML, and U+" width="480">
 </p>
 
 ### Favorites & Recently Used
@@ -100,7 +100,7 @@ Click the gear icon in the title bar to open the settings flyout. Changes are ap
 
 | Setting            | Options                                | Description                                                        |
 | ------------------ | -------------------------------------- | ------------------------------------------------------------------ |
-| **Scale**          | 80% / 90% / 100% / 110% / 125%        | Adjusts the overall UI size. Auto-scaled based on your display DPI |
+| **Scale**          | 80% / 90% / 100% / 110% / 125%         | Adjusts the overall UI size. Auto-scaled based on your display DPI |
 | **Idle Opacity**   | Off / High / Mid / Low / Very          | How transparent the window becomes when idle (100% → 35%)          |
 | **Fade Delay**     | 50ms – 1000ms                          | How long after the mouse leaves before the fade begins             |
 | **Glyph Size**     | S / M / L                              | Character size in the grid — fewer columns at larger sizes         |
