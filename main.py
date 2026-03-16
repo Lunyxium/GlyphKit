@@ -321,6 +321,10 @@ class GlyphKitApp:
 		except Exception:
 			pass
 		try:
+			stop_hotkey_listener()
+		except Exception:
+			pass
+		try:
 			self.root.destroy()
 		except Exception:
 			pass
@@ -1109,7 +1113,7 @@ class GlyphKitApp:
 		handle.bind("<Leave>", lambda e: handle.configure(fg=C["teal_dim"]))
 
 		tk.Label(
-			row1, text=f"{sep}{info['license']} License{sep}433 glyphs / 13 categories",
+			row1, text=f"{sep}{info['license']} License{sep}{sum(len(c['chars']) for c in CATEGORIES.values())} glyphs / {len(CATEGORIES)} categories",
 			bg=C["bg"], fg=dim, font=("Segoe UI", self._font_ui),
 		).pack(side="left")
 
